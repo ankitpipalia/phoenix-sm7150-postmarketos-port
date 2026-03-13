@@ -28,17 +28,19 @@ This repository contains the pmaports packages and kernel patches needed to run 
 | Booting | ✅ Working |
 | Display | ✅ Working |
 | Touchscreen | ✅ Working |
-| USB networking (RNDIS) | 🔧 Untested |
-| WiFi | 🔧 Untested |
-| Bluetooth | 🔧 Untested |
-| Audio | 🔧 Untested |
+| USB networking (RNDIS) | ✅ Working |
+| WiFi | ✅ Working |
+| Bluetooth | ✅ Working (adapter up, scanning works) |
+| Audio | ❌ Not working (ADSP sensor PD crash, q6asm-dai probe fails) |
 | Camera | ❌ Not working |
-| Modem / calls | 🔧 Untested |
+| Modem / calls | ⚠️ Remoteproc running, untested |
 | GPS | 🔧 Untested |
-| Sensors | 🔧 Untested |
-| Battery / charging | 🔧 Untested |
-| 3D acceleration | 🔧 Untested |
+| Sensors | ❌ Not working (missing sensor PD firmware) |
+| Battery / charging | ⚠️ Battery level reads OK, charging not working (no charger driver in kernel) |
+| GPU / 3D acceleration | ⚠️ DRI device present (card0, renderD128), untested |
 | SD card | 🔧 Untested |
+| NFC | ⚠️ nfc0 detected, untested |
+| USB-C hub ethernet | ⚠️ Works, but drops when charger/USB added to hub (see Troubleshooting) |
 
 ---
 
@@ -214,10 +216,56 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 - Check `dmesg` on your computer for RNDIS device detection
 - Ensure the combined image was fully flashed to `userdata` (all 4 sparse parts)
 
+### WiFi / Ethernet not working — "NetworkManager Not Running"
+- NetworkManager must be enabled as an OpenRC service (this is now handled by the device package)
+- If you hit this on an older install, fix manually:
+  ```bash
+  doas rc-update add networkmanager default
+  doas rc-service networkmanager start
+  ```
+- After NM starts, WiFi networks appear in Settings and USB-C hub ethernet works automatically
+
+### Bluetooth not working
+- The `bluetooth` OpenRC service must be running. The device package now enables it at boot.
+- If you're on an older install, enable manually:
+  ```bash
+  doas rc-update add bluetooth default
+  doas rc-service bluetooth start
+  doas hciconfig hci0 up
+  ```
+- Verify with `hciconfig hci0` — should show `UP RUNNING`
+
+### USB-C hub ethernet drops when charging or adding USB devices
+- **Known limitation**: When a charger or additional USB device is plugged into the same USB-C hub, the phone's Type-C port may undergo a USB PD power role swap. The kernel TCPM driver (qcom,pm6150-typec) renegotiates the USB-C connection, which can reset the DWC3 USB controller and disconnect all downstream devices (hub, ethernet adapter).
+- The DT connector is configured with `data-role = "dual"` and `power-role = "source"`. When the hub introduces a new power source, the TCPM attempts a power role swap (source→sink), which disrupts the USB host session.
+- **Workaround**: Only connect ethernet via the USB-C hub. Do not plug a charger into the same hub while ethernet is in use.
+- **Future fix**: A DTS overlay could lock the connector to `data-role = "host"` to prevent role swaps, but this would disable USB gadget/RNDIS mode when connected directly to a PC.
+
+### Audio not working / ADSP crash loop
+- The ADSP remoteproc runs but its sensor user-PD subprocess crashes repeatedly with: `USER-PD DOG detects stalled initialization`
+- This causes `q6asm-dai` probe to fail (error -22), preventing audio initialization
+- Root cause: missing sensor process firmware for phoenix. The ADSP sensor watchdog times out every ~40 seconds and restarts.
+- This is a known issue on SM7150 mainline — proper sensor firmware extraction and hexagonrpcd configuration may resolve it.
+- Check `dmesg | grep -i "fatal error"` to see the crash cycle
+
 ### Display/panel issues in U-Boot
 - U-Boot uses the `davinci` device tree; the phoenix display panel differs
 - This may cause garbled or no display in U-Boot, but Linux will initialize the panel correctly
 - Boot will still proceed even if U-Boot display is blank
+
+### Reboot / shutdown not working from phosh menu
+- The phosh power menu uses `elogind` (via D-Bus) to trigger reboot/shutdown. If `elogind` is not running, the menu appears but times out after 60 seconds without acting.
+- The device package now enables elogind at boot. For older installs, fix manually:
+  ```bash
+  doas rc-update add elogind default
+  doas rc-service elogind start
+  ```
+- You can also reboot via SSH: `doas reboot` or `loginctl reboot`
+
+### Charging not working
+- The kernel does not include a charger IC driver for the PM6150 PMIC. Only `BATTERY_QCOM_QG` (fuel gauge) is compiled, which can read battery level/voltage/temperature but cannot control charging.
+- A charger driver (likely `CONFIG_CHARGER_QCOM_SMBB` or similar for the PM6150 SMB charger block) needs to be enabled in the sm7150-mainline kernel config.
+- Battery level is visible at `/sys/class/power_supply/qcom_qg/capacity`
 
 ---
 
@@ -225,10 +273,11 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 
 Contributions welcome! Areas that need work:
 
+- **Charger driver** — enable PM6150 SMB charger IC driver in the kernel config
 - **Phoenix-specific U-Boot DTS** — port the davinci U-Boot DT to phoenix for correct display in U-Boot
-- **Audio** — test and enable audio drivers
+- **Audio** — fix ADSP sensor PD crash that prevents q6asm-dai initialization
 - **Modem** — test cellular/call functionality
-- **Sensors** — IIO sensor drivers
+- **Sensors** — extract and package sensor PD firmware for ADSP
 - **Submit to pmaports** — once stable, upstream these packages to [pmaports](https://gitlab.postmarketos.org/postmarketOS/pmaports)
 
 Please follow the [postmarketOS contributing guidelines](https://wiki.postmarketos.org/wiki/Contributing) when submitting patches to pmaports.

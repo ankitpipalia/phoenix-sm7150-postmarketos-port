@@ -1,0 +1,92 @@
+diff --git a/arch/arm64/boot/dts/qcom/pm6150.dtsi b/arch/arm64/boot/dts/qcom/pm6150.dtsi
+index 73a70610d..bc472f183 100644
+--- a/arch/arm64/boot/dts/qcom/pm6150.dtsi
++++ b/arch/arm64/boot/dts/qcom/pm6150.dtsi
+@@ -109,6 +109,18 @@ pm6150_typec: typec@1500 {
+ 			status = "disabled";
+ 		};
+ 
++		pm6150_charger: charger@1000 {
++			compatible = "qcom,pm6150-charger";
++			reg = <0x1000>;
++			interrupts = <0x0 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
++				     <0x0 0x12 0x2 IRQ_TYPE_EDGE_BOTH>,
++				     <0x0 0x16 0x1 IRQ_TYPE_EDGE_RISING>,
++				     <0x0 0x13 0x6 IRQ_TYPE_EDGE_RISING>;
++			interrupt-names = "usb-plugin", "bat-ov",
++					  "wdog-bark", "usbin-icl-change";
++			status = "disabled";
++		};
++
+ 		pm6150_temp: temp-alarm@2400 {
+ 			compatible = "qcom,spmi-temp-alarm";
+ 			reg = <0x2400>;
+@@ -126,6 +138,18 @@ pm6150_adc: adc@3100 {
+ 			#size-cells = <0>;
+ 			#io-channel-cells = <1>;
+ 
++			channel@7 {
++				reg = <ADC5_USB_IN_I>;
++				label = "usb_in_i";
++				qcom,pre-scaling = <1 1>;
++			};
++
++			channel@8 {
++				reg = <ADC5_USB_IN_V_16>;
++				label = "usb_in_v";
++				qcom,pre-scaling = <1 16>;
++			};
++
+ 			channel@6 {
+ 				reg = <ADC5_DIE_TEMP>;
+ 				label = "die_temp";
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+index e563c205e..d5c0be045 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-common.dtsi
+@@ -524,6 +524,14 @@ &mdss_dsi0_phy {
+ 	status = "okay";
+ };
+ 
++&pm6150_charger {
++	monitored-battery = <&battery>;
++	io-channels = <&pm6150_adc ADC5_USB_IN_I>,
++		      <&pm6150_adc ADC5_USB_IN_V_16>;
++	io-channel-names = "usbin_i", "usbin_v";
++	status = "okay";
++};
++
+ &pm6150_qgauge {
+ 	monitored-battery = <&battery>;
+ 	status = "okay";
+@@ -546,12 +554,17 @@ &pm6150_typec {
+ 	connector {
+ 		compatible = "usb-c-connector";
+ 
+-		power-role = "source";
++		power-role = "dual";
+ 		data-role = "dual";
++		try-power-role = "sink";
+ 		self-powered;
+ 
+ 		source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
+ 			       PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)>;
++		sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_DUAL_ROLE |
++			     PDO_FIXED_USB_COMM | PDO_FIXED_DATA_SWAP)
++			     PDO_VAR(5000, 12000, 3000)>;
++		op-sink-microwatt = <15000000>;
+ 
+ 		ports {
+ 			#address-cells = <1>;
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index b1cb92558..b93cc0f2d 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -1033,6 +1033,7 @@ static int smb_probe(struct platform_device *pdev)
+ static const struct of_device_id smb_match_id_table[] = {
+ 	{ .compatible = "qcom,pmi8998-charger", .data = "pmi8998" },
+ 	{ .compatible = "qcom,pm660-charger", .data = "pm660" },
++	{ .compatible = "qcom,pm6150-charger", .data = "pm6150" },
+ 	{ /* sentinal */ }
+ };
+ MODULE_DEVICE_TABLE(of, smb_match_id_table);

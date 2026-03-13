@@ -13,6 +13,9 @@ depends="
 	device-qcom-sm7150
 	firmware-xiaomi-phoenix
 	make-dynpart-mappings
+	networkmanager
+	bluez
+	polkit-elogind
 	postmarketos-base
 "
 makedepends="devicepkg-dev"
@@ -31,6 +34,19 @@ package() {
 
 	install -Dm644 "$srcdir"/hexagonrpcd.confd \
 		"$pkgdir"/usr/share/hexagonrpcd/hexagonrpcd-sdsp.conf
+
+	# Enable NetworkManager at boot (required for WiFi/Ethernet in phosh)
+	mkdir -p "$pkgdir"/etc/runlevels/default
+	ln -sf /etc/init.d/networkmanager \
+		"$pkgdir"/etc/runlevels/default/networkmanager
+
+	# Enable Bluetooth at boot
+	ln -sf /etc/init.d/bluetooth \
+		"$pkgdir"/etc/runlevels/default/bluetooth
+
+	# Enable elogind at boot (required for phosh reboot/shutdown)
+	ln -sf /etc/init.d/elogind \
+		"$pkgdir"/etc/runlevels/default/elogind
 }
 
 subpackages="$pkgname-nonfree-firmware:nonfree_firmware"
