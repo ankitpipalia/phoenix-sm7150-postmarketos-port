@@ -1,34 +1,31 @@
-# Gradle files
-.gradle/
-build/
+# Firmware binaries (proprietary — never commit)
+*.bin
+*.mbn
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.zip
 
-# Local configuration file (sdk path, etc)
-local.properties
+# Flashable images (generated artifacts)
+*.img
+boot.img
+rootfs.img
 
-# Log/OS Files
-*.log
+# pmbootstrap work directory
+pmbootstrap-work/
 
-# Android Studio generated files and folders
-captures/
-.externalNativeBuild/
-.cxx/
-*.aab
+# Alpine build artifacts
 *.apk
-output-metadata.json
+src/
+pkg/
 
-# IntelliJ
-*.iml
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
 .idea/
-misc.xml
-deploymentTargetDropDown.xml
-render.experimental.xml
 
-# Keystore files
-*.jks
-*.keystore
-
-# Google Services (e.g. APIs or Firebase)
-google-services.json
-
-# Android Profiling
-*.hprof
+# Logs
+*.log
