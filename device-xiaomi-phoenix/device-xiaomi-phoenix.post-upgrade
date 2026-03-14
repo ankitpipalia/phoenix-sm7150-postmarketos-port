@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+
+# Re-apply on upgrades in case dependency symlinks were recreated.
+rm -f /etc/systemd/system/ModemManager.service.requires/msm-modem-uim-selection.service
+
+mkdir -p /etc/systemd/system
+ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
+
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl reenable phoenix-wlan-mac.service >/dev/null 2>&1 || true
+	systemctl start phoenix-wlan-mac.service >/dev/null 2>&1 || true
+fi
+
+if [ -x /usr/libexec/phoenix-wlan-mac.sh ]; then
+	/usr/libexec/phoenix-wlan-mac.sh wlan0 || true
+fi
+
+if command -v dconf >/dev/null 2>&1; then
+	dconf update >/dev/null 2>&1 || true
+fi

@@ -1,0 +1,11 @@
+[org/gnome/desktop/notifications]
+show-banners=false
+show-in-lock-screen=false
+
+[org/gnome/desktop/screensaver]
+status-message-enabled=false
+
+[sm/puri/phosh/notifications]
+wakeup-screen-triggers=@as []
+wakeup-screen-categories=@as []
+wakeup-screen-urgency='critical'

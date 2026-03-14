@@ -1,7 +1,7 @@
 maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=firmware-xiaomi-phoenix
 pkgver=1
-pkgrel=0
+pkgrel=2
 pkgdesc="Firmware for Xiaomi POCO X2 / Redmi K30 4G (phoenix)"
 url="https://github.com/Vanilla-s-Android-Stuff/firmware-xiaomi-phoenix"
 arch="aarch64"
@@ -22,6 +22,6 @@ package() {
 }
 
 sha512sums="
-edf6d9d77292ab74f17c33ff2912988b470e6ec58b2b7f378cd823686346b6db7c302b4b6f0c3d0dfc26c312eebb232f5c820e6326ad2fe44990fd60514dd324  firmware-xiaomi-phoenix.tar.gz
+ef98c57c135dafabb699a152972577e43e90cd76ed7e075d8c3e95ad39d0873ce9b8c7f1ec9a9d6a18875513b4c0127ec93cfb98c8c8eb9314d648067bf4c525  firmware-xiaomi-phoenix.tar.gz
 be833b9c116f8b032c3fc0f09210a1b13dd0f20e6374f756c0e4dacfec3d164971e4885fd4d73943afc63b922217926d10058ea0c50635fd4acedf1b173b4b68  30-initramfs-firmware-xiaomi-phoenix.files
 "

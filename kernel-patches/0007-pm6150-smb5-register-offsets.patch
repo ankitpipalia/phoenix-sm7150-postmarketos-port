@@ -1,0 +1,66 @@
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index b1cb92558..46ce1aef9 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -23,6 +23,13 @@
+ #include <linux/types.h>
+ #include <linux/workqueue.h>
+ 
++enum smb_generation {
++	SMB2,
++	SMB5,
++};
++
++#define SMB_REG_OFFSET(chip) ((chip)->gen == SMB2 ? 0x600 : 0x100)
++
+ /* clang-format off */
+ #define BATTERY_CHARGER_STATUS_1			0x06
+ #define BVR_INITIAL_RAMP_BIT				BIT(7)
+@@ -300,10 +307,10 @@
+ #define AICL_SWITCH_ENABLE_BIT				BIT(1)
+ #define ZIN_ICL_ENABLE_BIT				BIT(0)
+ 
+-#define ICL_STATUS					0x607
++#define ICL_STATUS(chip)				(SMB_REG_OFFSET(chip) + 0x07)
+ #define INPUT_CURRENT_LIMIT_MASK			GENMASK(7, 0)
+ 
+-#define POWER_PATH_STATUS				0x60B
++#define POWER_PATH_STATUS(chip)				(SMB_REG_OFFSET(chip) + 0x0B)
+ #define P_PATH_INPUT_SS_DONE_BIT			BIT(7)
+ #define P_PATH_USBIN_SUSPEND_STS_BIT			BIT(6)
+ #define P_PATH_DCIN_SUSPEND_STS_BIT			BIT(5)
+@@ -386,6 +393,7 @@ struct smb_chip {
+ 	struct device *dev;
+ 	const char *name;
+ 	unsigned int base;
++	enum smb_generation gen;
+ 	struct regmap *regmap;
+ 	struct power_supply_battery_info *batt_info;
+ 
+@@ -416,7 +424,7 @@ static int smb_get_prop_usb_online(struct smb_chip *chip, int *val)
+ 	unsigned int stat;
+ 	int rc;
+ 
+-	rc = regmap_read(chip->regmap, chip->base + POWER_PATH_STATUS, &stat);
++	rc = regmap_read(chip->regmap, chip->base + POWER_PATH_STATUS(chip), &stat);
+ 	if (rc < 0) {
+ 		dev_err(chip->dev, "Couldn't read power path status: %d\n", rc);
+ 		return rc;
+@@ -522,7 +530,7 @@ static int smb_get_prop_status(struct smb_chip *chip, int *val)
+ static inline int smb_get_current_limit(struct smb_chip *chip,
+ 					 unsigned int *val)
+ {
+-	int rc = regmap_read(chip->regmap, chip->base + ICL_STATUS, val);
++	int rc = regmap_read(chip->regmap, chip->base + ICL_STATUS(chip), val);
+ 
+ 	if (rc >= 0)
+ 		*val *= CURRENT_SCALE_FACTOR;
+@@ -937,6 +945,8 @@ static int smb_probe(struct platform_device *pdev)
+ 
+ 	chip->dev = &pdev->dev;
+ 	chip->name = pdev->name;
++	chip->gen = of_device_is_compatible(chip->dev->of_node,
++					    "qcom,pm6150-charger") ? SMB5 : SMB2;
+ 
+ 	chip->regmap = dev_get_regmap(pdev->dev.parent, NULL);
+ 	if (!chip->regmap)

@@ -1,0 +1,26 @@
+#!/bin/sh
+set -e
+
+# msm-modem-uim-selection fails when modem firmware is unavailable and its
+# RequiredBy= relationship drags ModemManager down with it.
+rm -f /etc/systemd/system/ModemManager.service.requires/msm-modem-uim-selection.service
+
+# Keep this unit masked by default; unmask manually once modem bring-up is done.
+mkdir -p /etc/systemd/system
+ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
+
+# Ensure all WantedBy links from the current unit file are applied.
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl reenable phoenix-wlan-mac.service >/dev/null 2>&1 || true
+	systemctl start phoenix-wlan-mac.service >/dev/null 2>&1 || true
+fi
+
+# Apply deterministic wlan0 MAC immediately on fresh install if interface exists.
+if [ -x /usr/libexec/phoenix-wlan-mac.sh ]; then
+	/usr/libexec/phoenix-wlan-mac.sh wlan0 || true
+fi
+
+# Compile dconf defaults so notification policy is active after install.
+if command -v dconf >/dev/null 2>&1; then
+	dconf update >/dev/null 2>&1 || true
+fi

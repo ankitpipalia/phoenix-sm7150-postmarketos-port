@@ -33,12 +33,14 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 | USB networking (RNDIS) | ✅ Working |
 | WiFi | ✅ Working |
 | Bluetooth | ✅ Working (adapter up, scanning works) |
+| Root access for default user | ✅ Working (`doas` and `sudo` are passwordless for `user`) |
+| Screen wake behavior | ✅ Working (notification/task-complete wakeups disabled by dconf policy; power button wake only) |
 | Audio | ❌ Not working (ADSP sensor PD crash, q6asm-dai probe fails) |
 | Camera | ❌ Not working |
 | Modem / calls | ⚠️ Remoteproc running, untested |
 | GPS | 🔧 Untested |
 | Sensors | ❌ Not working (missing sensor PD firmware) |
-| Battery / charging | ⚠️ Basic charging path enabled (PM6150 patch), but charging negotiation/edge cases still incomplete |
+| Battery / charging | ⚠️ PM6150 charging path enabled; PM6150 SMB5 register-offset fix added. Hub/PD edge cases still incomplete |
 | GPU / 3D acceleration | ⚠️ DRI device present (card0, renderD128), untested |
 | SD card | 🔧 Untested |
 | NFC | ⚠️ nfc0 detected, untested |
@@ -52,6 +54,16 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 ├── device-xiaomi-phoenix/       # pmaports device package
 │   ├── APKBUILD                 # Package build definition
 │   ├── deviceinfo               # Device configuration for pmbootstrap
+│   ├── 00-phoenix-notification-policy      # dconf defaults: disable wake-on-notification
+│   ├── 00-phoenix-notification-policy.lock # dconf locks to keep wake policy enforced
+│   ├── dconf-profile-user       # enables system-db:local policy loading
+│   ├── 90-phoenix-mac.conf      # disable NetworkManager randomized WiFi MAC
+│   ├── phoenix-wlan-mac.sh      # deterministic wlan0 MAC provisioning
+│   ├── phoenix-wlan-mac.service # applies MAC before NetworkManager
+│   ├── doas-user-nopass.conf    # passwordless doas for default user
+│   ├── sudoers-user-nopass.conf # passwordless sudo for default user
+│   ├── device-xiaomi-phoenix.post-install  # masks uim-selection, updates dconf
+│   ├── device-xiaomi-phoenix.post-upgrade  # re-applies service/policy defaults
 │   ├── hexagonrpcd.confd        # Hexagon DSP daemon config
 │   └── modules-initfs           # Kernel modules loaded in initramfs
 │
@@ -63,7 +75,10 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── 0001-dts-add-xiaomi-phoenix.patch   # Add phoenix to sm7150 Makefile
 │   ├── 0002-phoenix-dts.patch              # Main device tree source
 │   ├── 0003-phoenix-panel.patch            # NT36672C display panel support
-│   └── 0004-pm6150-add-charger-support.patch  # PM6150 charger + USB-C PD role config
+│   ├── 0004-pm6150-add-charger-support.patch  # PM6150 charger + USB-C PD role config
+│   ├── 0005-add-wcn3998-wifi-bt-power-management.patch # WCN3998 WiFi/BT DT fixes (UART3 pinctrl + BT compatible)
+│   ├── 0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch # ath10k QMI host-cap fallback
+│   └── 0007-pm6150-smb5-register-offsets.patch # PM6150 SMB5-style charger register offsets for online/current detection
 │
 ├── docs/
 │   └── FRESH-LINUX-STOCK-ROM.md           # Full clean-host + stock-ROM runbook
@@ -134,6 +149,7 @@ Clone [pmaports](https://gitlab.postmarketos.org/postmarketOS/pmaports) and sync
 The sync script copies both device packages, copies all kernel patches, and updates
 `pmaports/device/community/linux-postmarketos-qcom-sm7150/APKBUILD` (`source=` and `sha512sums`) automatically.
 It also ensures `CONFIG_DRM_PANEL_G7B_37_02_0A_DSC=m` in the kernel config to avoid interactive oldconfig prompts.
+It also ensures `CONFIG_CHARGER_QCOM_SMB2=m` in the kernel config for PM6150 charger support.
 The checksum update is source-order aware (`tarball`, `config`, then patches) to prevent
 abuild checksum mismatches during kernel package builds.
 
@@ -190,22 +206,33 @@ ssh user@172.16.42.1
 
 ## Firmware
 
-The `firmware-xiaomi-phoenix` package requires proprietary firmware files extracted from the stock ROM. The APKBUILD expects a tarball containing:
+The `firmware-xiaomi-phoenix` package requires proprietary firmware files extracted from the stock ROM. The package tarball should include a full firmware tree with at least:
 
 ```
+lib/firmware/qcom/sm7150/phoenix/adsp.mbn
+lib/firmware/qcom/sm7150/phoenix/cdsp.mbn
+lib/firmware/qcom/sm7150/phoenix/modem.mbn
+lib/firmware/qcom/sm7150/phoenix/wlanmdsp.mbn
+lib/firmware/qcom/sm7150/phoenix/ipa_fws.mbn
+lib/firmware/qcom/sm7150/phoenix/venus.mbn
 lib/firmware/qcom/sm7150/phoenix/a615_zap.mbn
 lib/firmware/novatek_nt36672c_g7b_fw01.bin
+lib/firmware/ath10k/WCN3990/hw1.0/board-2.bin
+lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin
+lib/firmware/qca/crbtfw21.tlv
+lib/firmware/qca/crnv21.bin
 ```
 
-Create the tarball in the expected location:
+Recommended tarball creation (from an assembled firmware tree):
 
 ```bash
 ./scripts/build-firmware-tarball.sh \
-  --a615-zap /path/to/a615_zap.mbn \
-  --novatek-fw /path/to/novatek_nt36672c_g7b_fw01.bin
+  --firmware-root /path/with/lib/firmware
 ```
 
-These can be extracted from a stock MIUI ROM using [payload-dumper-go](https://github.com/ssut/payload-dumper-go) or similar tools. A pre-packaged tarball is available at the [firmware-xiaomi-phoenix](https://github.com/Vanilla-s-Android-Stuff/firmware-xiaomi-phoenix) community repository.
+Legacy minimal mode is still available with `--a615-zap` and `--novatek-fw`, but it is not enough for modem/remoteproc-dependent features.
+
+These files can be extracted from stock MIUI partitions using [payload-dumper-go](https://github.com/ssut/payload-dumper-go) or similar tools. A pre-packaged base set is available at the [firmware-xiaomi-phoenix](https://github.com/Vanilla-s-Android-Stuff/firmware-xiaomi-phoenix) community repository.
 
 **Firmware files are proprietary and are NOT included in this repository.**
 
@@ -223,6 +250,9 @@ git apply ../kernel-patches/0001-dts-add-xiaomi-phoenix.patch
 git apply ../kernel-patches/0002-phoenix-dts.patch
 git apply ../kernel-patches/0003-phoenix-panel.patch
 git apply ../kernel-patches/0004-pm6150-add-charger-support.patch
+git apply ../kernel-patches/0005-add-wcn3998-wifi-bt-power-management.patch
+git apply ../kernel-patches/0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch
+git apply ../kernel-patches/0007-pm6150-smb5-register-offsets.patch
 ```
 
 Or use pmbootstrap which handles this automatically:
@@ -257,6 +287,42 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
   doas rc-service networkmanager start
   ```
 - After NM starts, WiFi networks appear in Settings and USB-C hub ethernet works automatically
+
+### WiFi MAC address changes on every boot
+- This port now installs `phoenix-wlan-mac.service` to force a deterministic `wlan0` MAC before NetworkManager starts.
+- The address is derived from device serial and persisted at `/var/lib/phoenix/wlan0-mac`.
+- Verify with:
+  ```bash
+  cat /sys/class/net/wlan0/address
+  cat /var/lib/phoenix/wlan0-mac
+  systemctl status phoenix-wlan-mac.service
+  ```
+
+### Screen wakes up on notifications / task completion
+- This port ships a locked dconf policy so normal notifications do not wake the display.
+- Wakeup is restricted to physical wake actions (power button), which avoids random screen wake events.
+- Verify the policy is active:
+  ```bash
+  gsettings get org.gnome.desktop.notifications show-banners
+  gsettings get org.gnome.desktop.notifications show-in-lock-screen
+  gsettings get sm.puri.phosh.notifications wakeup-screen-triggers
+  gsettings writable org.gnome.desktop.notifications show-banners
+  gsettings writable sm.puri.phosh.notifications wakeup-screen-triggers
+  ```
+- Expected values:
+  - `show-banners` = `false`
+  - `show-in-lock-screen` = `false`
+  - `wakeup-screen-triggers` = `@as []`
+  - both `gsettings writable ...` checks return `false` (policy lock is enforced)
+
+### Settings app opens slowly / hangs (ModemManager timeout)
+- This port masks `msm-modem-uim-selection.service` by default in the device package until modem firmware/userspace are fully ready.
+- If you intentionally want to test modem bring-up, unmask it manually:
+  ```bash
+  doas rm -f /etc/systemd/system/msm-modem-uim-selection.service
+  doas systemctl daemon-reload
+  doas systemctl enable --now msm-modem-uim-selection.service
+  ```
 
 ### Bluetooth not working
 - The `bluetooth` OpenRC service must be running. The device package now enables it at boot.
@@ -296,7 +362,8 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 - You can also reboot via SSH: `doas reboot` or `loginctl reboot`
 
 ### Charging is inconsistent
-- The PM6150 charger patch (`0004-pm6150-add-charger-support.patch`) is included and charging support is now present at a basic level.
+- The PM6150 charger path is enabled by `0004-pm6150-add-charger-support.patch`.
+- `0007-pm6150-smb5-register-offsets.patch` fixes PM6150 charger online/current register offset handling (SMB5-style status offsets), improving charging detection.
 - Charging behavior is still inconsistent across power bricks/hubs/cables because USB-C PD role negotiation can still reset the link.
 - For long debug sessions, pre-charge in Android or use a stable direct charger path (not a multi-function hub).
 - Battery level is visible at `/sys/class/power_supply/qcom_qg/capacity`

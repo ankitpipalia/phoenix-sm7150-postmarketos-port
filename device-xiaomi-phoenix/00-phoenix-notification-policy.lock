@@ -1,0 +1,6 @@
+/org/gnome/desktop/notifications/show-banners
+/org/gnome/desktop/notifications/show-in-lock-screen
+/org/gnome/desktop/screensaver/status-message-enabled
+/sm/puri/phosh/notifications/wakeup-screen-triggers
+/sm/puri/phosh/notifications/wakeup-screen-categories
+/sm/puri/phosh/notifications/wakeup-screen-urgency

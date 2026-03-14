@@ -1,0 +1,31 @@
+diff --git a/drivers/net/wireless/ath/ath10k/qmi.c b/drivers/net/wireless/ath/ath10k/qmi.c
+--- a/drivers/net/wireless/ath/ath10k/qmi.c
++++ b/drivers/net/wireless/ath/ath10k/qmi.c
+@@ -688,12 +688,24 @@ static int ath10k_qmi_host_cap_send_sync(struct ath10k_qmi *qmi)
+ 	if (ret < 0)
+ 		goto out;
+ 
+-	/* older FW didn't support this request, which is not fatal */
++	/*
++	 * Older firmware did not support this request, which is not fatal.
++	 *
++	 * Some WCN3990 firmware variants also return QMI_ERR_MALFORMED_MSG_V01
++	 * here even though bring-up can continue afterwards. Treat this error as
++	 * non-fatal as well to avoid aborting WLAN probe.
++	 */
+ 	if (resp.resp.result != QMI_RESULT_SUCCESS_V01 &&
+-	    resp.resp.error != QMI_ERR_NOT_SUPPORTED_V01) {
++	    resp.resp.error != QMI_ERR_NOT_SUPPORTED_V01 &&
++	    resp.resp.error != QMI_ERR_MALFORMED_MSG_V01) {
+ 		ath10k_err(ar, "host capability request rejected: %d\n", resp.resp.error);
+ 		ret = -EINVAL;
+ 		goto out;
+ 	}
+ 
++	if (resp.resp.result != QMI_RESULT_SUCCESS_V01 &&
++	    resp.resp.error == QMI_ERR_MALFORMED_MSG_V01)
++		ath10k_warn(ar,
++			    "host capability request returned malformed-msg, continuing\n");
++
+ 	ath10k_dbg(ar, ATH10K_DBG_QMI, "qmi host capability request completed\n");
+ 	return 0;

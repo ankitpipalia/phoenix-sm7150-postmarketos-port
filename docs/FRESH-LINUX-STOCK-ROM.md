@@ -95,19 +95,15 @@ Do **not** relock bootloader after flashing stock if you plan to run postmarketO
 
 ## 4. Build Proprietary Firmware Tarball
 
-This port expects:
-
-- `a615_zap.mbn`
-- `novatek_nt36672c_g7b_fw01.bin`
-
-If you extracted stock payload/firmware already, build package tarball:
+This port expects a full firmware tree under `lib/firmware` (SM7150 DSP/modem +
+WiFi/BT + display/GPU blobs). If you already assembled firmware files, build
+the package tarball with:
 
 ```bash
 cd ~/Documents/phoenix/phoenix-sm7150-postmarketos-port
 
 ./scripts/build-firmware-tarball.sh \
-  --a615-zap /absolute/path/to/a615_zap.mbn \
-  --novatek-fw /absolute/path/to/novatek_nt36672c_g7b_fw01.bin
+  --firmware-root /absolute/path/with/lib/firmware
 ```
 
 Expected output:
@@ -115,6 +111,9 @@ Expected output:
 ```text
 ~/Documents/phoenix/phoenix-sm7150-postmarketos-port/firmware-xiaomi-phoenix/firmware-xiaomi-phoenix.tar.gz
 ```
+
+Legacy minimal mode (`--a615-zap` + `--novatek-fw`) is still supported by the
+script, but it is insufficient for modem/remoteproc-dependent features.
 
 ---
 
@@ -133,6 +132,7 @@ What this script does:
 - copies kernel patches into `device/community/linux-postmarketos-qcom-sm7150`
 - updates kernel `source=` and `sha512sums`
 - enforces `CONFIG_DRM_PANEL_G7B_37_02_0A_DSC=m` in kernel config
+- enforces `CONFIG_CHARGER_QCOM_SMB2=m` in kernel config
 - updates checksums in correct source order (`tarball`, `config`, patches) to avoid abuild mismatch
 
 ---
@@ -254,6 +254,56 @@ ssh user@172.16.42.1
 
 Use password passed to `pmbootstrap install --password`.
 
+Default privilege policy on this port:
+
+```bash
+doas id
+sudo -n id
+```
+
+Both should return `uid=0(root)` without a password prompt for `user`.
+
+Runtime sanity checks (WiFi, Bluetooth, ModemManager, charging):
+
+```bash
+# WiFi/BT device visibility
+nmcli radio all
+nmcli device status
+hciconfig -a
+
+# ModemManager should be running; uim-selection should stay masked by default
+systemctl status ModemManager msm-modem-uim-selection
+
+# Charger + battery nodes
+ls /sys/class/power_supply
+grep -H . /sys/class/power_supply/*/uevent | head -n 80
+```
+
+WiFi MAC stability check (prevents DHCP IP churn):
+
+```bash
+cat /sys/class/net/wlan0/address
+cat /var/lib/phoenix/wlan0-mac
+systemctl status phoenix-wlan-mac.service
+```
+
+Screen wake policy check (display should not wake for notifications/tasks):
+
+```bash
+gsettings get org.gnome.desktop.notifications show-banners
+gsettings get org.gnome.desktop.notifications show-in-lock-screen
+gsettings get sm.puri.phosh.notifications wakeup-screen-triggers
+gsettings writable org.gnome.desktop.notifications show-banners
+gsettings writable sm.puri.phosh.notifications wakeup-screen-triggers
+```
+
+Expected:
+
+- `show-banners` = `false`
+- `show-in-lock-screen` = `false`
+- `wakeup-screen-triggers` = `@as []`
+- both `gsettings writable ...` checks return `false` (policy lock enabled)
+
 ---
 
 ## 11. Iteration Workflow (After First Success)
@@ -277,6 +327,6 @@ Only reflash `boot` if you changed U-Boot image.
 
 - Audio remains broken (ADSP sensor PD crash loop)
 - Sensors are incomplete (firmware/user-PD path not finalized)
+- PM6150 SMB5 register-offset fix is included for charger online/current path, but charging behavior is still hub/PD dependent
 - USB-C hub + simultaneous charging can cause link resets
 - U-Boot display is imperfect until phoenix-specific U-Boot DTS exists
-

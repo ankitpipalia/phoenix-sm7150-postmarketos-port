@@ -46,10 +46,8 @@ update_source_block() {
 	BEGIN {
 		n = split(patch_list, p, "\n");
 		for (i = 1; i <= n; i++) {
-			if (p[i] != "") {
+			if (p[i] != "")
 				order[++count] = p[i];
-				want[p[i]] = 1;
-			}
 		}
 	}
 	$0 ~ /^source="/ { in_source = 1 }
@@ -58,14 +56,12 @@ update_source_block() {
 		gsub(/^[ \t]+|[ \t]+$/, "", line);
 		gsub(/^"/, "", line);
 		gsub(/"$/, "", line);
-		if (line != "" && line != "source=")
-			have[line] = 1;
+		if (line ~ /\.patch$/)
+			next;
 	}
 	in_source && $0 == "\"" {
 		for (i = 1; i <= count; i++) {
-			name = order[i];
-			if (!have[name])
-				print "\t" name;
+			print "\t" order[i];
 		}
 		print;
 		in_source = 0;
@@ -114,6 +110,8 @@ update_sha512_entries() {
 		file_name = parts[length(parts)];
 		if (target[file_name])
 			next;
+		if (file_name ~ /\.patch$/)
+			next;
 	}
 	{ print }
 	' "$file" > "$tmp"
@@ -145,6 +143,11 @@ cp -a "$repo_root/firmware-xiaomi-phoenix" "$device_testing_dir/"
 
 patch_names=()
 sum_lines=()
+
+# Remove previously synced local kernel patch files so deleted patches in
+# source-of-truth don't linger in the pmaports package directory.
+find "$kernel_dir" -maxdepth 1 -type f -name '*.patch' -delete
+
 while IFS= read -r patch_path; do
 	patch_name="$(basename "$patch_path")"
 	patch_names+=("$patch_name")
@@ -166,6 +169,9 @@ update_source_block "$kernel_apkbuild" "$patch_list_text"
 # explicitly in the package kernel config to avoid oldconfig prompts/defaults.
 kernel_config="$kernel_dir/config-postmarketos-qcom-sm7150.aarch64"
 ensure_kernel_config_symbol "$kernel_config" "CONFIG_DRM_PANEL_G7B_37_02_0A_DSC" "m"
+
+# PM6150 charger driver (qcom_smbx) needed for battery charging support.
+ensure_kernel_config_symbol "$kernel_config" "CONFIG_CHARGER_QCOM_SMB2" "m"
 
 # Keep checksums aligned with local patch/config mutations to avoid abuild
 # verification failures during pmbootstrap build.

@@ -1,0 +1,14 @@
+[Unit]
+Description=Set deterministic WLAN MAC address for Xiaomi Phoenix
+BindsTo=sys-subsystem-net-devices-wlan0.device
+After=sys-subsystem-net-devices-wlan0.device
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'sleep 12; /usr/libexec/phoenix-wlan-mac.sh wlan0'
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=sys-subsystem-net-devices-wlan0.device
