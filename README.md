@@ -4,6 +4,8 @@
 
 This repository contains the pmaports packages and kernel patches needed to run [postmarketOS](https://postmarketos.org) on the **Xiaomi POCO X2** (Indian market) / **Xiaomi Redmi K30 4G** (Global), codename **phoenix**, powered by the Qualcomm Snapdragon 730G (SM7150-AB).
 
+If you are starting from a completely fresh Linux host and a stock MIUI phone in fastboot mode, use the end-to-end guide: [docs/FRESH-LINUX-STOCK-ROM.md](docs/FRESH-LINUX-STOCK-ROM.md).
+
 ---
 
 ## Device Specifications
@@ -36,7 +38,7 @@ This repository contains the pmaports packages and kernel patches needed to run 
 | Modem / calls | ⚠️ Remoteproc running, untested |
 | GPS | 🔧 Untested |
 | Sensors | ❌ Not working (missing sensor PD firmware) |
-| Battery / charging | ⚠️ Battery level reads OK, charging not working (no charger driver in kernel) |
+| Battery / charging | ⚠️ Basic charging path enabled (PM6150 patch), but charging negotiation/edge cases still incomplete |
 | GPU / 3D acceleration | ⚠️ DRI device present (card0, renderD128), untested |
 | SD card | 🔧 Untested |
 | NFC | ⚠️ nfc0 detected, untested |
@@ -60,7 +62,17 @@ This repository contains the pmaports packages and kernel patches needed to run 
 ├── kernel-patches/              # Kernel DTS patches for phoenix
 │   ├── 0001-dts-add-xiaomi-phoenix.patch   # Add phoenix to sm7150 Makefile
 │   ├── 0002-phoenix-dts.patch              # Main device tree source
-│   └── 0003-phoenix-panel.patch            # NT36672C display panel support
+│   ├── 0003-phoenix-panel.patch            # NT36672C display panel support
+│   └── 0004-pm6150-add-charger-support.patch  # PM6150 charger + USB-C PD role config
+│
+├── docs/
+│   └── FRESH-LINUX-STOCK-ROM.md           # Full clean-host + stock-ROM runbook
+│
+└── scripts/
+    ├── wipe-pmbootstrap-state.sh          # Remove old pmbootstrap state (fresh init)
+    ├── sync-phoenix-port-into-pmaports.sh # Copy packages/patches + update kernel APKBUILD sums
+    ├── pmbootstrap-phoenix.sh             # Run pmbootstrap with fixed config/work/pmaports paths
+    └── build-firmware-tarball.sh          # Build firmware-xiaomi-phoenix.tar.gz from extracted blobs
 ```
 
 ---
@@ -85,13 +97,21 @@ The FAT32 ESP and rootfs are stored as a combined GPT image flashed to `userdata
 
 - **Unlocked bootloader** — required; follow [Xiaomi's unlock process](https://en.miui.com/unlock/)
 - **ADB / fastboot** tools installed on your computer
-- **pmbootstrap** 3.9.0+ — install with: `pip install pmbootstrap`
+- **pmbootstrap** 3.9.0+ (required by current pmaports)
+  - If your distro package is too old, clone pmbootstrap:
+    `git clone https://gitlab.postmarketos.org/postmarketOS/pmbootstrap.git ~/Documents/phoenix/pmbootstrap`
 - **U-Boot** for SM7150 (see below)
 - At least 4 GB free space for the build
 
 ---
 
 ## Installation
+
+### Step 0: Fresh-system guide (recommended)
+
+If this is your first install, follow [docs/FRESH-LINUX-STOCK-ROM.md](docs/FRESH-LINUX-STOCK-ROM.md) exactly.
+It includes host package installation, stock ROM prerequisites, firmware tarball creation,
+pmbootstrap setup, and flashing commands.
 
 ### Step 1: Get U-Boot
 
@@ -105,32 +125,36 @@ wget https://github.com/sm7150-mainline/u-boot/releases/download/2025-12-02/u-bo
 
 ### Step 2: Set up pmaports
 
-Clone [pmaports](https://gitlab.postmarketos.org/postmarketOS/pmaports) and copy the packages from this repo:
+Clone [pmaports](https://gitlab.postmarketos.org/postmarketOS/pmaports) and sync this repo into it:
 
 ```bash
-git clone https://gitlab.postmarketos.org/postmarketOS/pmaports.git
-# Copy device package
-cp -r device-xiaomi-phoenix/ pmaports/device/testing/
-# Copy firmware package
-cp -r firmware-xiaomi-phoenix/ pmaports/device/testing/
-# Apply kernel patches
-cp kernel-patches/*.patch pmaports/device/community/linux-postmarketos-qcom-sm7150/
+./scripts/sync-phoenix-port-into-pmaports.sh ~/Documents/phoenix/pmaports
 ```
 
-Then update `pmaports/device/community/linux-postmarketos-qcom-sm7150/APKBUILD` to include the patches in its `source=` list and update sha512sums.
+The sync script copies both device packages, copies all kernel patches, and updates
+`pmaports/device/community/linux-postmarketos-qcom-sm7150/APKBUILD` (`source=` and `sha512sums`) automatically.
+It also ensures `CONFIG_DRM_PANEL_G7B_37_02_0A_DSC=m` in the kernel config to avoid interactive oldconfig prompts.
+The checksum update is source-order aware (`tarball`, `config`, then patches) to prevent
+abuild checksum mismatches during kernel package builds.
 
 ### Step 3: Configure pmbootstrap
 
 ```bash
-pmbootstrap init
+# IMPORTANT: fresh state, do not reuse old chroots/workdirs
+./scripts/wipe-pmbootstrap-state.sh ~/Documents/phoenix/.pmbootstrap
+
+./scripts/pmbootstrap-phoenix.sh init
 # Select: device = xiaomi-phoenix, UI = phosh (or your choice), kernel = edge
 ```
 
 ### Step 4: Build and install
 
 ```bash
-pmbootstrap install --password YOUR_PASSWORD
+./scripts/pmbootstrap-phoenix.sh install --password YOUR_PASSWORD
 ```
+
+Generated rootfs image (used for fastboot flashing):
+`~/Documents/phoenix/.pmbootstrap/chroot_native/home/pmos/rootfs/xiaomi-phoenix.img`
 
 ### Step 5: Flash
 
@@ -148,7 +172,7 @@ fastboot --disable-verity --disable-verification flash vbmeta vbmeta.img
 fastboot --disable-verity --disable-verification flash vbmeta_system vbmeta_system.img
 
 # 4. Flash combined rootfs image (FAT32 ESP + ext4 root) to userdata
-pmbootstrap flasher flash_rootfs
+./scripts/pmbootstrap-phoenix.sh flasher flash_rootfs
 
 # 5. Reboot
 fastboot reboot
@@ -173,6 +197,14 @@ lib/firmware/qcom/sm7150/phoenix/a615_zap.mbn
 lib/firmware/novatek_nt36672c_g7b_fw01.bin
 ```
 
+Create the tarball in the expected location:
+
+```bash
+./scripts/build-firmware-tarball.sh \
+  --a615-zap /path/to/a615_zap.mbn \
+  --novatek-fw /path/to/novatek_nt36672c_g7b_fw01.bin
+```
+
 These can be extracted from a stock MIUI ROM using [payload-dumper-go](https://github.com/ssut/payload-dumper-go) or similar tools. A pre-packaged tarball is available at the [firmware-xiaomi-phoenix](https://github.com/Vanilla-s-Android-Stuff/firmware-xiaomi-phoenix) community repository.
 
 **Firmware files are proprietary and are NOT included in this repository.**
@@ -190,6 +222,7 @@ git checkout v6.18
 git apply ../kernel-patches/0001-dts-add-xiaomi-phoenix.patch
 git apply ../kernel-patches/0002-phoenix-dts.patch
 git apply ../kernel-patches/0003-phoenix-panel.patch
+git apply ../kernel-patches/0004-pm6150-add-charger-support.patch
 ```
 
 Or use pmbootstrap which handles this automatically:
@@ -237,7 +270,7 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 
 ### USB-C hub ethernet drops when charging or adding USB devices
 - **Known limitation**: When a charger or additional USB device is plugged into the same USB-C hub, the phone's Type-C port may undergo a USB PD power role swap. The kernel TCPM driver (qcom,pm6150-typec) renegotiates the USB-C connection, which can reset the DWC3 USB controller and disconnect all downstream devices (hub, ethernet adapter).
-- The DT connector is configured with `data-role = "dual"` and `power-role = "source"`. When the hub introduces a new power source, the TCPM attempts a power role swap (source→sink), which disrupts the USB host session.
+- The DT connector is configured with `data-role = "dual"` and `power-role = "dual"` (`try-power-role = "sink"`). Role renegotiation can still disrupt the USB host session on some hubs.
 - **Workaround**: Only connect ethernet via the USB-C hub. Do not plug a charger into the same hub while ethernet is in use.
 - **Future fix**: A DTS overlay could lock the connector to `data-role = "host"` to prevent role swaps, but this would disable USB gadget/RNDIS mode when connected directly to a PC.
 
@@ -262,9 +295,10 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
   ```
 - You can also reboot via SSH: `doas reboot` or `loginctl reboot`
 
-### Charging not working
-- The kernel does not include a charger IC driver for the PM6150 PMIC. Only `BATTERY_QCOM_QG` (fuel gauge) is compiled, which can read battery level/voltage/temperature but cannot control charging.
-- A charger driver (likely `CONFIG_CHARGER_QCOM_SMBB` or similar for the PM6150 SMB charger block) needs to be enabled in the sm7150-mainline kernel config.
+### Charging is inconsistent
+- The PM6150 charger patch (`0004-pm6150-add-charger-support.patch`) is included and charging support is now present at a basic level.
+- Charging behavior is still inconsistent across power bricks/hubs/cables because USB-C PD role negotiation can still reset the link.
+- For long debug sessions, pre-charge in Android or use a stable direct charger path (not a multi-function hub).
 - Battery level is visible at `/sys/class/power_supply/qcom_qg/capacity`
 
 ---
@@ -273,7 +307,7 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 
 Contributions welcome! Areas that need work:
 
-- **Charger driver** — enable PM6150 SMB charger IC driver in the kernel config
+- **Charging robustness** — improve PM6150 USB-C role/negotiation stability across different hubs/chargers
 - **Phoenix-specific U-Boot DTS** — port the davinci U-Boot DT to phoenix for correct display in U-Boot
 - **Audio** — fix ADSP sensor PD crash that prevents q6asm-dai initialization
 - **Modem** — test cellular/call functionality
@@ -297,6 +331,7 @@ Please follow the [postmarketOS contributing guidelines](https://wiki.postmarket
 | SM7150 generic migration post | https://postmarketos.org/edge/2025/03/09/sm7150-generic-migration/ |
 | U-Boot on Qualcomm phones | https://docs.u-boot.org/en/latest/board/qualcomm/phones.html |
 | pmbootstrap docs | https://wiki.postmarketos.org/wiki/Pmbootstrap |
+| Fresh host + stock ROM runbook | [docs/FRESH-LINUX-STOCK-ROM.md](docs/FRESH-LINUX-STOCK-ROM.md) |
 | Deviceinfo reference | https://wiki.postmarketos.org/wiki/Deviceinfo_reference |
 | Firmware extraction guide | https://wiki.postmarketos.org/wiki/Firmware |
 | Tauchgang (U-Boot releases) | https://tauchgang.dev |

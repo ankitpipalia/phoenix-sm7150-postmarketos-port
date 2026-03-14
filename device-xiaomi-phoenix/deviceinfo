@@ -21,6 +21,7 @@ deviceinfo_screen_height="2400"
 # U-Boot reads FAT32 ESP from combined image on userdata
 deviceinfo_flash_method="fastboot"
 deviceinfo_boot_filesystem="fat32"
+deviceinfo_efi_boot="true"
 
 # UFS storage
 deviceinfo_rootfs_image_sector_size="4096"

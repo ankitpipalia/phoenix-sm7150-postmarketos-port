@@ -1,4 +1,4 @@
-maintainer="Ankit Pipalia <REPLACE_WITH_YOUR_EMAIL>"
+maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=firmware-xiaomi-phoenix
 pkgver=1
 pkgrel=0
@@ -9,7 +9,7 @@ license="proprietary"
 options="!check !strip !archcheck !tracedeps pmb:cross-native"
 
 source="
-	firmware-xiaomi-phoenix.tar.gz::https://local.pmbootstrap.example/firmware-xiaomi-phoenix.tar.gz
+	firmware-xiaomi-phoenix.tar.gz
 	30-initramfs-firmware-xiaomi-phoenix.files
 "
 
@@ -22,6 +22,6 @@ package() {
 }
 
 sha512sums="
-343521d4a47a05de61874ec84ee1d4d506ddb481f5ad6894b3741bf55b379a14141e013b82ac77c6614184fd628e3b0ea0378264d820223409042fc438b1290e  firmware-xiaomi-phoenix.tar.gz
+edf6d9d77292ab74f17c33ff2912988b470e6ec58b2b7f378cd823686346b6db7c302b4b6f0c3d0dfc26c312eebb232f5c820e6326ad2fe44990fd60514dd324  firmware-xiaomi-phoenix.tar.gz
 be833b9c116f8b032c3fc0f09210a1b13dd0f20e6374f756c0e4dacfec3d164971e4885fd4d73943afc63b922217926d10058ea0c50635fd4acedf1b173b4b68  30-initramfs-firmware-xiaomi-phoenix.files
 "

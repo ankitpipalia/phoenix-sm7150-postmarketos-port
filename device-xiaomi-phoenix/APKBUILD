@@ -1,5 +1,5 @@
 # Reference: <https://postmarketos.org/devicepkg>
-maintainer="Ankit Pipalia <REPLACE_WITH_YOUR_EMAIL>"
+maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
@@ -8,15 +8,22 @@ url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
 options="!check !archcheck"
-replaces="device-qcom-sm7150"
 depends="
-	device-qcom-sm7150
+	alsa-ucm-conf-qcom-sm7150
+	firmware-qcom-sm7150
 	firmware-xiaomi-phoenix
+	hexagonrpcd
+	linux-postmarketos-qcom-sm7150
 	make-dynpart-mappings
 	networkmanager
 	bluez
 	polkit-elogind
 	postmarketos-base
+	soc-qcom
+	soc-qcom-modem
+	soc-qcom-qbootctl
+	systemd-boot
+	unl0kr-fbforcerefresh
 "
 makedepends="devicepkg-dev"
 source="
@@ -58,7 +65,7 @@ nonfree_firmware() {
 }
 
 sha512sums="
-40377aaa5a7d0bb05b83e4f82f1507b6e2bad7e346574ce0263e93b849ca604c4d41716f192abc694e90bb62aa5a21c0f6d8a24bdf0154b9a23c3fa87f7934b9  deviceinfo
+1cc47e6ad55024e0c6b8fe9457557020f32b90e741a75303331c0eeeea05b12508b76194c2abaec5ff2e7bb6ba59ecb49913dc335bb082d3b3493312a812f087  deviceinfo
 0b94aae89479b0d684b1a0e6c498763afa623f11a89ebe96bda2db1ead36c71a3a93a25131eca8bbc51341fe3ff261c7101960e814d9c05cd553287387e6dee0  hexagonrpcd.confd
 f0304347e4b8018b1d3731df4daa2da91b2e3b76ca39e107b3ed2efaaccfa924445868aaf026de14c6808cc56959a486c2062ca2efa5b6f5f2ccbdc9c4919113  modules-initfs
 "

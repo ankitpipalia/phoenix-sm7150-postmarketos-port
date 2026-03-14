@@ -1,13 +1,14 @@
 # Flashing Guide — Xiaomi POCO X2 / Redmi K30 4G
 
 Quick-reference for flashing postmarketOS. See [README.md](README.md) for full installation instructions.
+For a full clean-host workflow, see [docs/FRESH-LINUX-STOCK-ROM.md](docs/FRESH-LINUX-STOCK-ROM.md).
 
 ## Required Files
 
 | File | Where to Get |
 |------|-------------|
 | `u-boot-sm7150-xiaomi-davinci-samsung.img` | [sm7150-mainline/u-boot releases](https://github.com/sm7150-mainline/u-boot/releases) |
-| `xiaomi-phoenix.img` | Built by `pmbootstrap install` |
+| `xiaomi-phoenix.img` | Built by `pmbootstrap install` (`~/.pmbootstrap/chroot_native/home/pmos/rootfs/xiaomi-phoenix.img` with this repo's wrapper paths) |
 | `vbmeta.img` + `vbmeta_system.img` | From stock MIUI ROM (fastboot-stock-rom/) |
 
 ## Enter Fastboot Mode
@@ -17,6 +18,9 @@ Power off the device, then hold **Volume Down + Power** until the fastboot scree
 ## Flash Commands (in order)
 
 ```bash
+# Optional sanity check: device is visible in fastboot
+fastboot devices
+
 # 1. U-Boot — UEFI intermediate bootloader
 fastboot flash boot u-boot-sm7150-xiaomi-davinci-samsung.img
 
@@ -35,6 +39,7 @@ fastboot reboot
 ```
 
 > **Note:** Step 4 flashes a ~3.3 GB sparse image and takes 2–3 minutes.
+> Fastboot may print `Invalid sparse file format at header magic` before sparse chunks; this is expected for Android sparse transfer and is not an error by itself.
 
 ## After Boot
 
