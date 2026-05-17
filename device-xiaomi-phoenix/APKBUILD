@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=17
+pkgrel=18
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -57,6 +57,8 @@ source="
 	extra-addon/phoenix-typec-recover.service
 	extra-addon/phoenix-typec-recover.sh
 	extra-addon/phoenix-typec-recover.timer
+	extra-addon/phoenix-usb-host-wake.service
+	extra-addon/phoenix-usb-host-wake.sh
 "
 
 build() {
@@ -140,6 +142,17 @@ package() {
 		"$pkgdir"/usr/lib/systemd/system/phoenix-typec-recover.timer
 	install -Dm644 "$srcdir"/phoenix-typec-recover.conf \
 		"$pkgdir"/etc/phoenix-typec-recover.conf
+
+	# Cold-boot USB host wake: forces a usb_role_switch device→host
+	# toggle if eth0 doesn't appear within 45s of multi-user.target.
+	# Self-heals the case where a Type-C hub is attached at power-on,
+	# so qcom-pmic-typec never fires an attach event and xhci-hcd never
+	# probes. Required for unattended recovery after a power outage.
+	# Enable: `systemctl enable phoenix-usb-host-wake.service`
+	install -Dm755 "$srcdir"/phoenix-usb-host-wake.sh \
+		"$pkgdir"/usr/libexec/phoenix-usb-host-wake.sh
+	install -Dm644 "$srcdir"/phoenix-usb-host-wake.service \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-usb-host-wake.service
 	# ------------------------------------------------------------------------
 
 	# Passwordless root access for default postmarketOS user over doas/sudo.
@@ -188,6 +201,8 @@ e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1fa
 7b1f1e9c2470888f83d7b668a8e405efc9d91bdc0ecd6da80fef1a754856f23054bcfee4f81f600860e9ef546ecbc0fffd49f3dd23c3c95db0a9e3d04ade7d95  phoenix-typec-recover.service
 3e25bd9b8ec9e167d68211c96bf34d5d2fea1ba29eeb1730cd74d81250b659bcccde5d84bb6e0a21048cc9027ef5cc0d142886f32da1233bbd67703574e93b43  phoenix-typec-recover.sh
 782b0862643f2dae4a69eaf15b6577809702184795b47e4aaa48b140d2e01978231b6a7c4509ed986877378e1d58810ab7ec7e98e9a6de37bdecd3cbaf24daa4  phoenix-typec-recover.timer
+c6de9c9994be065fab7bf8bc080c37a5accbc69fa976ea73b1f7ffcdb9601696c910ec45e32fc0c869096f3a1521c60d80e4b48903c7006e26d6ed34ab5a7816  phoenix-usb-host-wake.service
+4a20f3ff065de2746d4505ef7695f8265c031d8719fc26454b5f5ac4047663f6f66f7f02d7b41d9fe95caa845b6084200a1de5a296edcb4e6f5ffe26260f9912  phoenix-usb-host-wake.sh
 50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
 d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
 b201b7d25d30afa4d8dc608d2eb052379b41a34e6d8eb12033dcaa4198aec1c855460ec30ef4a875da79651eb688a081af545d9ce992b543c379c040f4cd9ba3  device-xiaomi-phoenix.post-install

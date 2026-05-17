@@ -1,0 +1,20 @@
+[Unit]
+Description=Activate Ethernet via Hub when eth0 appears (cdc_ether late-enum fix)
+# USB-Ethernet adapters often register their netdev a beat after
+# NetworkManager finishes its initial device scan at boot, leaving the
+# saved profile dormant until the user unplugs/replugs the hub. This
+# service is triggered by phoenix-eth0-autoup.path whenever eth0 starts
+# existing in /sys/class/net/, and asks NM to activate the saved profile.
+# It is also safe to run when eth0 is already active — nmcli treats that
+# as a no-op.
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+# Retry briefly in case NM hasn't fully processed the new device yet.
+ExecStart=/bin/sh -c 'for i in $(seq 1 8); do \
+    nmcli -t -f GENERAL.STATE device show eth0 2>/dev/null | grep -q "connected" && exit 0; \
+    nmcli connection up "Ethernet via Hub" 2>/dev/null && exit 0; \
+    sleep 2; \
+done; exit 0'
