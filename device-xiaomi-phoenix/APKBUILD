@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=14
+pkgrel=15
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -42,6 +42,10 @@ source="
 	phoenix-charge-cap.sh
 	phoenix-charge-cap.timer
 	phoenix-screen-off.service
+	phoenix-typec-recover.conf
+	phoenix-typec-recover.service
+	phoenix-typec-recover.sh
+	phoenix-typec-recover.timer
 	phoenix-wlan-mac.service
 	phoenix-wlan-mac.sh
 	$pkgname.post-install
@@ -116,6 +120,19 @@ package() {
 	install -Dm644 "$srcdir"/phoenix-screen-off.service \
 		"$pkgdir"/usr/lib/systemd/system/phoenix-screen-off.service
 
+	# Optional rescue from "stuck as source" typec state. Not enabled by
+	# default; opt in with `systemctl enable --now phoenix-typec-recover.timer`.
+	# Guarded by /etc/phoenix-typec-recover.conf CAP_THRESHOLD (default 30%)
+	# so it never fires during normal charge-cap operation.
+	install -Dm755 "$srcdir"/phoenix-typec-recover.sh \
+		"$pkgdir"/usr/libexec/phoenix-typec-recover.sh
+	install -Dm644 "$srcdir"/phoenix-typec-recover.service \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-typec-recover.service
+	install -Dm644 "$srcdir"/phoenix-typec-recover.timer \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-typec-recover.timer
+	install -Dm644 "$srcdir"/phoenix-typec-recover.conf \
+		"$pkgdir"/etc/phoenix-typec-recover.conf
+
 	# Passwordless root access for default postmarketOS user over doas/sudo.
 	# This mirrors the live fix and makes it persistent across fresh flashes.
 	install -Dm600 "$srcdir"/doas-user-nopass.conf \
@@ -157,6 +174,10 @@ fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced
 5ece715fdab6311ce83c8a93065a921f03d0396d08a234f623ead713b59b03e169afdc5c15d861c71ae5494c4010751f416eab989255b5822a7e2f27277ed39c  phoenix-charge-cap.sh
 e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1faa36fd39aa2a5d90a19add355da33168da75ed1c2621fcd24  phoenix-charge-cap.timer
 71126ec16323ef86217561bb992ea0ae17e54327aa68c043f5c7dd6158640b234ad4d7a2dfdf45ff83968128587f0c7158e46b4438e22cfed46bf9271fd3969b  phoenix-screen-off.service
+620ea416f372ed224e41407e667db33a2e693b63f5f258d15be8b660069ce010ff6121643d44f8ec7f37a0d531f2ae48ab1d72093dd5d798e401442d3b8f10ec  phoenix-typec-recover.conf
+7b1f1e9c2470888f83d7b668a8e405efc9d91bdc0ecd6da80fef1a754856f23054bcfee4f81f600860e9ef546ecbc0fffd49f3dd23c3c95db0a9e3d04ade7d95  phoenix-typec-recover.service
+3e25bd9b8ec9e167d68211c96bf34d5d2fea1ba29eeb1730cd74d81250b659bcccde5d84bb6e0a21048cc9027ef5cc0d142886f32da1233bbd67703574e93b43  phoenix-typec-recover.sh
+782b0862643f2dae4a69eaf15b6577809702184795b47e4aaa48b140d2e01978231b6a7c4509ed986877378e1d58810ab7ec7e98e9a6de37bdecd3cbaf24daa4  phoenix-typec-recover.timer
 50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
 d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
 b201b7d25d30afa4d8dc608d2eb052379b41a34e6d8eb12033dcaa4198aec1c855460ec30ef4a875da79651eb688a081af545d9ce992b543c379c040f4cd9ba3  device-xiaomi-phoenix.post-install

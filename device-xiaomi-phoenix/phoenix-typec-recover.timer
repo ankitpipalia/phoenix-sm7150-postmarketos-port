@@ -1,0 +1,12 @@
+[Unit]
+Description=Run phoenix typec rescue every 5 minutes
+ConditionPathExists=/sys/class/typec/port0/power_role
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=10s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

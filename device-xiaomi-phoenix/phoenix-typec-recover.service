@@ -1,0 +1,7 @@
+[Unit]
+Description=Phoenix typec stuck-as-source rescue
+ConditionPathExists=/sys/class/typec/port0/power_role
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/phoenix-typec-recover.sh
