@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=13
+pkgrel=14
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -41,6 +41,7 @@ source="
 	phoenix-charge-cap.service
 	phoenix-charge-cap.sh
 	phoenix-charge-cap.timer
+	phoenix-screen-off.service
 	phoenix-wlan-mac.service
 	phoenix-wlan-mac.sh
 	$pkgname.post-install
@@ -109,6 +110,12 @@ package() {
 	install -Dm644 "$srcdir"/phoenix-charge-cap.conf \
 		"$pkgdir"/etc/phoenix-charge-cap.conf
 
+	# Optional headless / server-mode panel blanker. Not enabled by default;
+	# `systemctl enable phoenix-screen-off.service` turns it on for installs
+	# that don't run phosh and want the panel dark.
+	install -Dm644 "$srcdir"/phoenix-screen-off.service \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-screen-off.service
+
 	# Passwordless root access for default postmarketOS user over doas/sudo.
 	# This mirrors the live fix and makes it persistent across fresh flashes.
 	install -Dm600 "$srcdir"/doas-user-nopass.conf \
@@ -149,6 +156,7 @@ fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced
 8269c86cdd975cfb3338b2ce924fbe8a5844f50047610e534c9e0c875dec7ab3213baa9b80eaa30d96dc23f98e240eaacc5eebf0e2f183efaae61d45290e6a32  phoenix-charge-cap.service
 5ece715fdab6311ce83c8a93065a921f03d0396d08a234f623ead713b59b03e169afdc5c15d861c71ae5494c4010751f416eab989255b5822a7e2f27277ed39c  phoenix-charge-cap.sh
 e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1faa36fd39aa2a5d90a19add355da33168da75ed1c2621fcd24  phoenix-charge-cap.timer
+71126ec16323ef86217561bb992ea0ae17e54327aa68c043f5c7dd6158640b234ad4d7a2dfdf45ff83968128587f0c7158e46b4438e22cfed46bf9271fd3969b  phoenix-screen-off.service
 50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
 d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
 b201b7d25d30afa4d8dc608d2eb052379b41a34e6d8eb12033dcaa4198aec1c855460ec30ef4a875da79651eb688a081af545d9ce992b543c379c040f4cd9ba3  device-xiaomi-phoenix.post-install

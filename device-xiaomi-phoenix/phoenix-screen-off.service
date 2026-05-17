@@ -1,0 +1,20 @@
+[Unit]
+Description=Phoenix headless: turn off the panel backlight at boot
+# Server-mode aid. For phone-as-server installs (no phosh) the framebuffer
+# console keeps the panel lit on every boot until something explicitly
+# blanks it. This service turns the backlight off as early as the panel
+# is bound. The display still works — gnome/phosh will set its own
+# brightness if/when they start.
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+ConditionPathExists=/sys/class/backlight/backlight/brightness
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c "echo 0 > /sys/class/backlight/backlight/brightness; \
+                       echo 4 > /sys/class/backlight/backlight/bl_power || true"
+
+[Install]
+WantedBy=sysinit.target
