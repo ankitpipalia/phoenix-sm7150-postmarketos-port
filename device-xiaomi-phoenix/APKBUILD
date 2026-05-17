@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=16
+pkgrel=17
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -33,6 +33,7 @@ install="
 source="
 	00-phoenix-notification-policy
 	00-phoenix-notification-policy.lock
+	52_phoenix_eth_trust.nft
 	90-phoenix-mac.conf
 	90-phoenix-wlan-mac.preset
 	adsp-disable-recovery.service
@@ -71,6 +72,11 @@ package() {
 	# Use hardware MAC addresses (disable NetworkManager randomized MAC mode).
 	install -Dm644 "$srcdir"/90-phoenix-mac.conf \
 		"$pkgdir"/etc/NetworkManager/conf.d/90-phoenix-mac.conf
+
+	# Trust eth* interface (USB-C hub Ethernet) so hosted services like the
+	# phoenix-device-monitor dashboard are reachable on the LAN by default.
+	install -Dm644 "$srcdir"/52_phoenix_eth_trust.nft \
+		"$pkgdir"/etc/nftables.d/52_phoenix_eth_trust.nft
 
 	# Keep the display off for notification/task-complete events.
 	install -Dm644 "$srcdir"/00-phoenix-notification-policy \
@@ -168,6 +174,7 @@ nonfree_firmware() {
 sha512sums="
 abdce4edc62396ce7feb869e8a51be31895b176d8a680532d0e8e481b63116c4316b6452c122e70f89115014fa84178603b15f97e336839a49653e441dde7f7a  00-phoenix-notification-policy
 4ec412372522e996ae83d61e3bce130a44c0c26f33ee6456178f82b2e2ee2bd9fa699ae51ab0be9970403f558b8ab9b378a2a81978a7bca7014df12fb3dcf662  00-phoenix-notification-policy.lock
+d015b7e28df2213692f18a7ad358310a4df5b5db23356ad864cd07c9990b8080c9883821029a8a9d0c9024add6d29b99b638081edc63d7e8aa74a3b6c107a61e  52_phoenix_eth_trust.nft
 1699fb946b5cd237056fc9be47c3d1917c8fe8dfdf7884d665dea8e24cf45983fe9c781480617a3c8411b83d702c7eb849fb69bdfe2b3eec04a21ef04d3ce47a  90-phoenix-mac.conf
 faba3f40aa7a9a936bfe6aa5b422de6d38f2694a38e42fa30a6168ed7f2747202483df4ad2bf6e8f9a264336a95e95ab62a410fcf027e3c174ead7ec613c28e0  90-phoenix-wlan-mac.preset
 fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced29d482d0579313dd16df8a91030c7f6e0374e4025e715af0  adsp-disable-recovery.service

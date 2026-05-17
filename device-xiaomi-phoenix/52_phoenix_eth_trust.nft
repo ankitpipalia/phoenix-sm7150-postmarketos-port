@@ -1,0 +1,11 @@
+#!/usr/sbin/nft -f
+# Treat USB-Ethernet (cdc_ether/r8152/ax88…) as a trusted iface, the same
+# way 51_usb_inet.nft does for the USB-RNDIS tether. The phoenix-as-server
+# deployment uses eth* for the hub-attached LAN connection, and the
+# postmarketos default input chain otherwise has policy=drop, blocking the
+# dashboard at 7070 and anything else hosted on the device.
+table inet filter {
+    chain input {
+        iifname "eth*" accept comment "Allow incoming network traffic from Ethernet"
+    }
+}
