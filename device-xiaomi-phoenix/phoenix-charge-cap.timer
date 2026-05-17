@@ -1,0 +1,12 @@
+[Unit]
+Description=Run phoenix charge limiter every minute
+ConditionPathExists=/sys/class/power_supply/pm8150b-charger/status
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

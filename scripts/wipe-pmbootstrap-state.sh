@@ -14,6 +14,15 @@ elif command -v pmbootstrap >/dev/null 2>&1; then
 fi
 
 if [[ -d "$pmb_dir" ]]; then
+	# Refuse to delete a directory that doesn't look like a pmbootstrap
+	# workdir, so an accidental arg (or repo-cwd misresolution) can't take
+	# out an unrelated $HOME directory. A pmbootstrap workdir always
+	# contains a `config` file or a `chroot_native` subdir.
+	if [[ ! -e "$pmb_dir/config" && ! -d "$pmb_dir/chroot_native" ]]; then
+		echo "Refusing to delete $pmb_dir: does not look like a pmbootstrap workdir" >&2
+		echo "Expected one of: $pmb_dir/config or $pmb_dir/chroot_native" >&2
+		exit 1
+	fi
 	rm -rf "$pmb_dir"
 	echo "Removed pmbootstrap state: $pmb_dir"
 else

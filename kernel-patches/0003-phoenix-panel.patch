@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000..1
 --- /dev/null
 +++ b/drivers/gpu/drm/panel/panel-g7b-37-02-0a-dsc.c
-@@ -0,0 +1,415 @@
+@@ -0,0 +1,420 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +// Copyright (c) 2025 FIXME
 +// Generated with linux-mdss-dsi-panel-driver-generator from vendor device tree:
@@ -271,12 +271,14 @@ index 0000000..1
 +	ret = mipi_dsi_picture_parameter_set(ctx->dsi, &pps);
 +	if (ret < 0) {
 +		dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
++		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 +		return ret;
 +	}
 +
 +	ret = mipi_dsi_compression_mode(ctx->dsi, true);
 +	if (ret < 0) {
 +		dev_err(dev, "failed to enable compression mode: %d\n", ret);
++		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 +		return ret;
 +	}
 +
@@ -358,11 +360,12 @@ index 0000000..1
 +	if (ret)
 +		return dev_err_probe(dev, ret, "Failed to get backlight\n");
 +
-+	drm_panel_add(&ctx->panel);
-+
-+	/* This panel only supports DSC; unconditionally enable it */
++	/*
++	 * This panel only supports DSC; unconditionally enable it. DSC config
++	 * must be set up before drm_panel_add() so consumers that walk the
++	 * panel list never see this entry with dsi->dsc == NULL.
++	 */
 +	dsi->dsc = &ctx->dsc;
-+
 +	ctx->dsc.dsc_version_major = 1;
 +	ctx->dsc.dsc_version_minor = 1;
 +
@@ -378,6 +381,8 @@ index 0000000..1
 +	ctx->dsc.bits_per_component = 8;
 +	ctx->dsc.bits_per_pixel = 8 << 4; /* 4 fractional bits */
 +	ctx->dsc.block_pred_enable = true;
++
++	drm_panel_add(&ctx->panel);
 +
 +	ret = mipi_dsi_attach(dsi);
 +	if (ret < 0) {

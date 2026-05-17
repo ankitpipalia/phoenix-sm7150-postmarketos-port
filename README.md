@@ -40,7 +40,7 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 | Modem / calls | ⚠️ Remoteproc running, untested |
 | GPS | 🔧 Untested |
 | Sensors | ❌ Not working (missing sensor PD firmware) |
-| Battery / charging | ⚠️ PM6150 charging path enabled; PM6150 SMB5 register-offset fix added. Hub/PD edge cases still incomplete |
+| Battery / charging | ⚠️ PM6150 binds via `qcom,pm8150b-charger` fallback compatible on v7.1; `STATUS` reflects reality (`Full`/`Charging`), `CHARGE_FULL_DESIGN=4500000`, APSD detects DCP and sets `CURRENT_MAX=1.35 A`. `VOLTAGE_NOW`/`CURRENT_NOW` read 0 unless `STATUS=Charging` (upstream driver design). Hub/PD edge cases still incomplete |
 | GPU / 3D acceleration | ⚠️ DRI device present (card0, renderD128), untested |
 | SD card | 🔧 Untested |
 | NFC | ⚠️ nfc0 detected, untested |
@@ -71,14 +71,13 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── APKBUILD                 # Firmware package build definition
 │   └── 30-initramfs-firmware-xiaomi-phoenix.files  # Files included in initramfs
 │
-├── kernel-patches/              # Kernel DTS patches for phoenix
-│   ├── 0001-dts-add-xiaomi-phoenix.patch   # Add phoenix to sm7150 Makefile
-│   ├── 0002-phoenix-dts.patch              # Main device tree source
-│   ├── 0003-phoenix-panel.patch            # NT36672C display panel support
-│   ├── 0004-pm6150-add-charger-support.patch  # PM6150 charger + USB-C PD role config
-│   ├── 0005-add-wcn3998-wifi-bt-power-management.patch # WCN3998 WiFi/BT DT fixes (UART3 pinctrl + BT compatible)
-│   ├── 0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch # ath10k QMI host-cap fallback
-│   └── 0007-pm6150-smb5-register-offsets.patch # PM6150 SMB5-style charger register offsets for online/current detection
+├── kernel-patches/              # Kernel DTS + driver patches for phoenix on top of sm7150-mainline v7.1_rc3
+│   ├── 0001-dts-add-xiaomi-phoenix.patch         # Add phoenix to sm7150 + panel-g7b-37-02-0a-dsc to drm/panel Makefile/Kconfig
+│   ├── 0002-phoenix-dts.patch                    # Phoenix DTS (battery 4500 mAh design capacity, panel/touch/keys, USB, etc.)
+│   ├── 0003-phoenix-panel.patch                  # NT36672C-based panel driver (panel-g7b-37-02-0a-dsc)
+│   ├── 0004-pm6150-add-charger-support.patch     # USB-C dual-role + sink PDOs on &pm6150_typec (rest of original 0004 is upstream in v7.1)
+│   ├── 0005-add-wcn3998-wifi-bt-power-management.patch  # qup_uart3_sleep cts-pins bias-bus-hold→bias-pull-up; qcom,snoc-host-cap-8bit-quirk on &wifi
+│   └── 0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch  # ath10k QMI host-cap MALFORMED_MSG fallback
 │
 ├── docs/
 │   └── FRESH-LINUX-STOCK-ROM.md           # Full clean-host + stock-ROM runbook
@@ -98,7 +97,7 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 Qualcomm ABL (stock)
   └─→ U-Boot (sm7150-mainline, flashed to boot partition as Android boot image)
         └─→ systemd-boot (BOOTAA64.EFI on FAT32 ESP in userdata)
-              └─→ linux.efi (kernel 6.18+ with EFI stub) + initramfs + DTB
+              └─→ linux.efi (kernel 7.1_rc3+ with EFI stub) + initramfs + DTB
                     └─→ postmarketOS
 ```
 
@@ -243,16 +242,9 @@ These files can be extracted from stock MIUI partitions using [payload-dumper-go
 The kernel patches in `kernel-patches/` apply on top of the [sm7150-mainline Linux fork](https://github.com/sm7150-mainline/linux):
 
 ```bash
-git clone https://github.com/sm7150-mainline/linux.git
+git clone --depth=1 --branch v7.1_rc3 https://github.com/sm7150-mainline/linux.git
 cd linux
-git checkout v6.18
-git apply ../kernel-patches/0001-dts-add-xiaomi-phoenix.patch
-git apply ../kernel-patches/0002-phoenix-dts.patch
-git apply ../kernel-patches/0003-phoenix-panel.patch
-git apply ../kernel-patches/0004-pm6150-add-charger-support.patch
-git apply ../kernel-patches/0005-add-wcn3998-wifi-bt-power-management.patch
-git apply ../kernel-patches/0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch
-git apply ../kernel-patches/0007-pm6150-smb5-register-offsets.patch
+for p in ../kernel-patches/*.patch; do git apply "$p"; done
 ```
 
 Or use pmbootstrap which handles this automatically:
@@ -362,11 +354,13 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 - You can also reboot via SSH: `doas reboot` or `loginctl reboot`
 
 ### Charging is inconsistent
-- The PM6150 charger path is enabled by `0004-pm6150-add-charger-support.patch`.
-- `0007-pm6150-smb5-register-offsets.patch` fixes PM6150 charger online/current register offset handling (SMB5-style status offsets), improving charging detection.
+- The PM6150 charger node is in mainline as of v7.1; it binds via the `qcom,pm8150b-charger` fallback compatible so the SMB5 register path is used natively. `0004-pm6150-add-charger-support.patch` adds the missing USB-C dual-role + sink-PDO bits on `&pm6150_typec`.
+- `STATUS` correctly reflects `Full` / `Charging` / `Not charging` on this kernel (v6.18 was permanently stuck at `Not charging`).
+- `VOLTAGE_NOW` and `CURRENT_NOW` on `/sys/class/power_supply/pm8150b-charger/` read 0 when `STATUS != Charging` — this is **upstream design** in `qcom_smbx.c::smb_get_iio_chan()`, not a regression. Drain the battery below ~95 % and replug to see live readings populate from the IIO ADC.
+- The raw IIO inputs are always live: `/sys/bus/iio/devices/iio:device0/in_voltage_usb_in_{i_uv,v_div_16}_input`.
 - Charging behavior is still inconsistent across power bricks/hubs/cables because USB-C PD role negotiation can still reset the link.
 - For long debug sessions, pre-charge in Android or use a stable direct charger path (not a multi-function hub).
-- Battery level is visible at `/sys/class/power_supply/qcom_qg/capacity`
+- Battery level is visible at `/sys/class/power_supply/qcom_qg/capacity`; design capacity at `/sys/class/power_supply/qcom_qg/charge_full_design` (should report `4500000` µAh; was `-22` before 0002).
 
 ---
 

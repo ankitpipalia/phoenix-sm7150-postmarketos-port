@@ -110,7 +110,19 @@ else
 fi
 
 mkdir -p "$(dirname "$output")"
-tar -C "$tmp_dir" -czf "$output" lib
+
+# Build deterministically so two users with identical firmware trees produce
+# byte-identical tarballs (so the hardcoded sha512 in firmware-xiaomi-phoenix
+# /APKBUILD can actually match). --sort=name + fixed mtime cover the tar header
+# variance; piping into `gzip -n` strips the gzip filename/mtime header.
+if tar --version 2>/dev/null | grep -q "GNU tar"; then
+	tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+		-C "$tmp_dir" -cf - lib | gzip -9 -n > "$output"
+else
+	# BSD tar (macOS): different flag spelling, still deterministic.
+	tar -C "$tmp_dir" --uid 0 --gid 0 --uname '' --gname '' \
+		-cf - lib | gzip -9 -n > "$output"
+fi
 
 echo "Created: $output"
 sha512sum "$output"

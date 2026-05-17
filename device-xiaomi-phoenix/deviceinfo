@@ -13,18 +13,17 @@ deviceinfo_flash_kernel_on_update="true"
 # Device related
 deviceinfo_drm="true"
 deviceinfo_chassis="handset"
+deviceinfo_keyboard="false"
 deviceinfo_external_storage="true"
 deviceinfo_screen_width="1080"
 deviceinfo_screen_height="2400"
 
 # Bootloader related - U-Boot on boot partition provides UEFI
-# U-Boot reads FAT32 ESP from combined image on userdata
+# U-Boot reads FAT32 ESP (BOOTAA64.EFI/systemd-boot) from combined image
+# on userdata; the ESP type-GUID requires a GPT-tagged partition table.
 deviceinfo_flash_method="fastboot"
 deviceinfo_boot_filesystem="fat32"
-deviceinfo_efi_boot="true"
+deviceinfo_partition_type="gpt"
 
 # UFS storage
 deviceinfo_rootfs_image_sector_size="4096"
-
-# Super/dynamic partition
-deviceinfo_super_partitions="/dev/disk/by-partlabel/super"

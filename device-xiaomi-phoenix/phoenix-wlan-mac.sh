@@ -10,13 +10,10 @@ valid_mac() {
 }
 
 derive_mac() {
-	local src=""
-	local hash=""
-	local tail=""
-
+	src=""
 	for f in /proc/device-tree/serial-number /sys/firmware/devicetree/base/serial-number /etc/machine-id; do
 		[ -r "$f" ] || continue
-		src="$(tr -d '\000\n\r ' < "$f" 2>/dev/null || true)"
+		src="$(tr -d '\000\n\r ' < "$f" 2>/dev/null)" || src=""
 		[ -n "$src" ] && break
 	done
 
@@ -27,28 +24,33 @@ derive_mac() {
 }
 
 # Interface may appear slightly later during boot.
-for _ in $(seq 1 30); do
+i=0
+while [ "$i" -lt 30 ]; do
 	[ -e "/sys/class/net/$iface" ] && break
 	sleep 1
+	i=$((i + 1))
 done
 [ -e "/sys/class/net/$iface" ] || exit 0
 
 target_mac=""
 if [ -r "$state_file" ]; then
-	target_mac="$(tr -d '\n\r ' < "$state_file" | tr 'A-F' 'a-f' 2>/dev/null || true)"
+	target_mac="$(tr -d '\n\r ' < "$state_file" 2>/dev/null | tr 'A-F' 'a-f')" || target_mac=""
 fi
 
 if ! valid_mac "$target_mac"; then
-	target_mac="$(derive_mac || true)"
+	target_mac="$(derive_mac)" || target_mac=""
 fi
 
 valid_mac "$target_mac" || exit 0
 
 mkdir -p "$state_dir"
-printf '%s\n' "$target_mac" > "$state_file"
-chmod 600 "$state_file"
+# Write atomically so two concurrent invocations can't truncate each other.
+tmp_state="$(mktemp "$state_file.XXXXXX")" || exit 0
+printf '%s\n' "$target_mac" > "$tmp_state"
+chmod 600 "$tmp_state"
+mv "$tmp_state" "$state_file"
 
-current_mac="$(cat "/sys/class/net/$iface/address" 2>/dev/null | tr 'A-F' 'a-f' || true)"
+current_mac="$(cat "/sys/class/net/$iface/address" 2>/dev/null | tr 'A-F' 'a-f')" || current_mac=""
 [ "$current_mac" = "$target_mac" ] && exit 0
 
 ip link set dev "$iface" down || true

@@ -152,9 +152,11 @@ Then initialize:
 
 Choose:
 
-- Channel: `systemd-edge`
+- Channel: `edge` (pmbootstrap 3.x has no separate `systemd-edge` channel — pick `edge` and set `systemd = always` afterwards via `pmbootstrap config systemd always`)
 - Device: `xiaomi-phoenix`
 - UI: `phosh`
+- Also run `pmbootstrap config boot_size 512` (defaults to 256 MB which pmbootstrap rejects as too small)
+- And `pmbootstrap config build_pkgs_on_install True` so `install` auto-builds the local device/firmware packages
 
 ---
 
@@ -327,6 +329,6 @@ Only reflash `boot` if you changed U-Boot image.
 
 - Audio remains broken (ADSP sensor PD crash loop)
 - Sensors are incomplete (firmware/user-PD path not finalized)
-- PM6150 SMB5 register-offset fix is included for charger online/current path, but charging behavior is still hub/PD dependent
+- PM6150 SMB5 register handling is upstream in v7.1_rc3 (charger binds via the `qcom,pm8150b-charger` fallback compatible); `STATUS` reports `Full`/`Charging` correctly. `VOLTAGE_NOW`/`CURRENT_NOW` read 0 unless `STATUS=Charging` — this is upstream design, not a regression. Hub/PD edge cases still incomplete
 - USB-C hub + simultaneous charging can cause link resets
 - U-Boot display is imperfect until phoenix-specific U-Boot DTS exists

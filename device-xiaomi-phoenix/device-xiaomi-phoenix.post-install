@@ -9,15 +9,16 @@ rm -f /etc/systemd/system/ModemManager.service.requires/msm-modem-uim-selection.
 mkdir -p /etc/systemd/system
 ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
 
-# Ensure all WantedBy links from the current unit file are applied.
 if command -v systemctl >/dev/null 2>&1; then
+	# Pick up the /dev/null mask above and any unit-file changes shipped
+	# by this upgrade. Without daemon-reload, masking is a no-op until
+	# next boot when run against a live (non-chroot) system.
+	systemctl daemon-reload >/dev/null 2>&1 || true
+	# Make sure the [Install] wants-symlinks reflect the current unit
+	# file. systemctl start would race with the service ordering against
+	# NetworkManager (Before=) so we skip it; the unit fires at next
+	# boot. Direct invocation here would race the systemd-started copy.
 	systemctl reenable phoenix-wlan-mac.service >/dev/null 2>&1 || true
-	systemctl start phoenix-wlan-mac.service >/dev/null 2>&1 || true
-fi
-
-# Apply deterministic wlan0 MAC immediately on fresh install if interface exists.
-if [ -x /usr/libexec/phoenix-wlan-mac.sh ]; then
-	/usr/libexec/phoenix-wlan-mac.sh wlan0 || true
 fi
 
 # Compile dconf defaults so notification policy is active after install.

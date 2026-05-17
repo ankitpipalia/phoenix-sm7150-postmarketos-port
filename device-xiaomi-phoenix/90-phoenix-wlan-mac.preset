@@ -1,1 +1,2 @@
 enable phoenix-wlan-mac.service
+enable adsp-disable-recovery.service

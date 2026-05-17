@@ -1,0 +1,22 @@
+[Unit]
+Description=Disable ADSP remoteproc auto-recovery (phoenix sensor PD crash workaround)
+# Phoenix's sensor_process PD inside the ADSP fails SNS_REG_INIT at boot
+# every time (sns_registry_sensor.c:94: SNS_RC_SUCCESS == rc). The default
+# qcom_q6v5_pas recovery=enabled policy then restarts the whole ADSP every
+# ~4 seconds, producing ~11 crashes/minute, ~20°C of extra package heat,
+# and a battery drain rate that exhausts a charged battery in ~1 hour.
+# Disabling recovery freezes ADSP in the crashed state — audio is broken
+# anyway (q6asm-dai probe -22), and modem/cdsp remoteprocs are independent
+# and unaffected.
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+ConditionPathExists=/sys/class/remoteproc/remoteproc0/recovery
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c "echo disabled > /sys/class/remoteproc/remoteproc0/recovery"
+
+[Install]
+WantedBy=sysinit.target

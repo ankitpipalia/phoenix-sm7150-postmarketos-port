@@ -1,8 +1,7 @@
 diff --git a/arch/arm64/boot/dts/qcom/Makefile b/arch/arm64/boot/dts/qcom/Makefile
-index 54d6cdc4b..26b20b1b0 100644
 --- a/arch/arm64/boot/dts/qcom/Makefile
 +++ b/arch/arm64/boot/dts/qcom/Makefile
-@@ -275,6 +275,7 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm7125-xiaomi-joyeuse.dtb
+@@ -341,6 +341,7 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sm7125-xiaomi-joyeuse.dtb
  dtb-$(CONFIG_ARCH_QCOM)	+= sm7150-google-sunfish.dtb
  dtb-$(CONFIG_ARCH_QCOM)	+= sm7150-xiaomi-davinci-samsung.dtb
  dtb-$(CONFIG_ARCH_QCOM)	+= sm7150-xiaomi-davinci-visionox.dtb
@@ -11,13 +10,12 @@ index 54d6cdc4b..26b20b1b0 100644
  dtb-$(CONFIG_ARCH_QCOM)	+= sm7150-xiaomi-surya-tianma.dtb
  dtb-$(CONFIG_ARCH_QCOM)	+= sm7150-xiaomi-sweet.dtb
 diff --git a/drivers/gpu/drm/panel/Kconfig b/drivers/gpu/drm/panel/Kconfig
-index 8eaf5c94a..3b26e3b0d 100644
 --- a/drivers/gpu/drm/panel/Kconfig
 +++ b/drivers/gpu/drm/panel/Kconfig
-@@ -215,6 +215,16 @@ config DRM_PANEL_HIMAX_HX8394
- 
+@@ -227,6 +227,16 @@ config DRM_PANEL_HIMAX_HX8394
+
  	  If M is selected the module will be called panel-himax-hx8394.
- 
+
 +config DRM_PANEL_G7B_37_02_0A_DSC
 +	tristate "G7B NT36672C DSC panel (Xiaomi Poco X2)"
 +	depends on OF
@@ -32,11 +30,12 @@ index 8eaf5c94a..3b26e3b0d 100644
  	tristate "Huaxing FHD panel with NT36672C controller"
  	depends on OF
 diff --git a/drivers/gpu/drm/panel/Makefile b/drivers/gpu/drm/panel/Makefile
-index 94061f3f7..9f42018cc 100644
 --- a/drivers/gpu/drm/panel/Makefile
 +++ b/drivers/gpu/drm/panel/Makefile
-@@ -23,6 +23,7 @@ obj-$(CONFIG_DRM_PANEL_HIMAX_HX83112A) += panel-himax-hx83112a.o
+@@ -22,8 +22,9 @@ obj-$(CONFIG_DRM_PANEL_HIMAX_HX83102) += panel-himax-hx83102.o
+ obj-$(CONFIG_DRM_PANEL_HIMAX_HX83112A) += panel-himax-hx83112a.o
  obj-$(CONFIG_DRM_PANEL_HIMAX_HX83112B) += panel-himax-hx83112b.o
+ obj-$(CONFIG_DRM_PANEL_HIMAX_HX83121A) += panel-himax-hx83121a.o
  obj-$(CONFIG_DRM_PANEL_HIMAX_HX8394) += panel-himax-hx8394.o
  obj-$(CONFIG_DRM_PANEL_HUAXING_NT36672C) += panel-huaxing-nt36672c.o
 +obj-$(CONFIG_DRM_PANEL_G7B_37_02_0A_DSC)	+= panel-g7b-37-02-0a-dsc.o

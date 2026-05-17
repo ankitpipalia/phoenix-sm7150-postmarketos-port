@@ -1,0 +1,7 @@
+[Unit]
+Description=Phoenix charge limiter (hysteresis pause at threshold)
+ConditionPathExists=/sys/class/power_supply/pm8150b-charger/status
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/phoenix-charge-cap.sh

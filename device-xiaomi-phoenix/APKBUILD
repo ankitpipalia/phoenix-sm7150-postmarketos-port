@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=8
+pkgrel=13
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -11,7 +11,6 @@ options="!check !archcheck"
 depends="
 	alsa-ucm-conf-qcom-sm7150
 	doas
-	doas-sudo-shim
 	firmware-qcom-sm7150
 	firmware-xiaomi-phoenix
 	hexagonrpcd
@@ -36,7 +35,12 @@ source="
 	00-phoenix-notification-policy.lock
 	90-phoenix-mac.conf
 	90-phoenix-wlan-mac.preset
+	adsp-disable-recovery.service
 	dconf-profile-user
+	phoenix-charge-cap.conf
+	phoenix-charge-cap.service
+	phoenix-charge-cap.sh
+	phoenix-charge-cap.timer
 	phoenix-wlan-mac.service
 	phoenix-wlan-mac.sh
 	$pkgname.post-install
@@ -72,15 +76,38 @@ package() {
 
 	# Ath10k can fall back to random MAC when calibration data doesn't provide
 	# one. Apply a deterministic, persisted MAC before NetworkManager starts.
+	# Enable via systemd preset only - postmarketos-base runs
+	# `systemctl preset-all` at image build, and post-install/post-upgrade
+	# re-applies via `systemctl reenable`. A package-shipped manual
+	# WantedBy symlink would conflict with that flow and resurrect the
+	# unit after a user `systemctl disable`.
 	install -Dm755 "$srcdir"/phoenix-wlan-mac.sh \
 		"$pkgdir"/usr/libexec/phoenix-wlan-mac.sh
 	install -Dm644 "$srcdir"/phoenix-wlan-mac.service \
 		"$pkgdir"/usr/lib/systemd/system/phoenix-wlan-mac.service
 	install -Dm644 "$srcdir"/90-phoenix-wlan-mac.preset \
 		"$pkgdir"/usr/lib/systemd/system-preset/90-phoenix-wlan-mac.preset
-	mkdir -p "$pkgdir"/etc/systemd/system/multi-user.target.wants
-	ln -sf /usr/lib/systemd/system/phoenix-wlan-mac.service \
-		"$pkgdir"/etc/systemd/system/multi-user.target.wants/phoenix-wlan-mac.service
+
+	# Phoenix's ADSP firmware's sensor_process PD fails SNS_REG_INIT every
+	# ~4s, and the default qcom_q6v5_pas recovery=enabled policy restarts the
+	# whole ADSP on each crash -- ~11 crashes/min, ~20°C of extra package
+	# heat, and battery drain rate that exhausts a full charge in ~1h.
+	# Disable the recovery loop early in boot; audio is broken anyway.
+	install -Dm644 "$srcdir"/adsp-disable-recovery.service \
+		"$pkgdir"/usr/lib/systemd/system/adsp-disable-recovery.service
+
+	# Optional 24/7-server charge limiter. Pauses charging at 70%, resumes
+	# at 60% (hysteresis). Not enabled by default — opt in for server use
+	# with `systemctl enable --now phoenix-charge-cap.timer`. Adjust band
+	# in /etc/phoenix-charge-cap.conf.
+	install -Dm755 "$srcdir"/phoenix-charge-cap.sh \
+		"$pkgdir"/usr/libexec/phoenix-charge-cap.sh
+	install -Dm644 "$srcdir"/phoenix-charge-cap.service \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-charge-cap.service
+	install -Dm644 "$srcdir"/phoenix-charge-cap.timer \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-charge-cap.timer
+	install -Dm644 "$srcdir"/phoenix-charge-cap.conf \
+		"$pkgdir"/etc/phoenix-charge-cap.conf
 
 	# Passwordless root access for default postmarketOS user over doas/sudo.
 	# This mirrors the live fix and makes it persistent across fresh flashes.
@@ -115,14 +142,19 @@ sha512sums="
 abdce4edc62396ce7feb869e8a51be31895b176d8a680532d0e8e481b63116c4316b6452c122e70f89115014fa84178603b15f97e336839a49653e441dde7f7a  00-phoenix-notification-policy
 4ec412372522e996ae83d61e3bce130a44c0c26f33ee6456178f82b2e2ee2bd9fa699ae51ab0be9970403f558b8ab9b378a2a81978a7bca7014df12fb3dcf662  00-phoenix-notification-policy.lock
 1699fb946b5cd237056fc9be47c3d1917c8fe8dfdf7884d665dea8e24cf45983fe9c781480617a3c8411b83d702c7eb849fb69bdfe2b3eec04a21ef04d3ce47a  90-phoenix-mac.conf
-b6d9002308da5bc78e9086f88cdd53568d042fca993756e6827d43961f9f32aad4a6c1c387aaffb07cf90476d99963c92db4f2fe27efe02a7eda2781e00034de  90-phoenix-wlan-mac.preset
+faba3f40aa7a9a936bfe6aa5b422de6d38f2694a38e42fa30a6168ed7f2747202483df4ad2bf6e8f9a264336a95e95ab62a410fcf027e3c174ead7ec613c28e0  90-phoenix-wlan-mac.preset
+fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced29d482d0579313dd16df8a91030c7f6e0374e4025e715af0  adsp-disable-recovery.service
 24aa78ee30672628df4cf8acb48dac3411a8baa4ab0e32d5dc308adecbd82bbe3012e024b4b20c9f6f569817f588f33040d5969ad7a09e3ab69991d0262199df  dconf-profile-user
-1e59b3824f3a511aadb5f829a5ac0f47f31a4436f59d58a7c07595156b71f4a951b09ae7799be320c4db0ef6738fc3454bee7e9805d8e63ac3d1ead39bc378c6  phoenix-wlan-mac.service
-6c6c3f1a77a2786f8e5350648590dea1ddc936d06082cd4b21b85c37ad223e12a88ff2a048d701e17ecccbb7a862b8d7c6332cbdcd0d8a82357fc52217c0132c  phoenix-wlan-mac.sh
-360db6684ee60d78fefe813feeb920e61e50fedf557b7eb7b2df98b7acdf02554908e7c179f9d411f66e1909c372e8b12a9c92b91a8e678a3b0c020a498e6bdd  device-xiaomi-phoenix.post-install
-1cf57954ecd9df3cb050af61fab25266bca6ecc211238a63a210ec442df6ad610b22d23a530a48e1fe2e30f9a0be2dc3af01ddf6e084ca01c54a5089b5ee32de  device-xiaomi-phoenix.post-upgrade
+05507cbed39c233ca7b78883ac2fc54a37fdefb00bbd7269fb482351b4e18790d2a36287d2692941c45d4e287bf33f601ce756ff27b1a7bbe0ec65f07a71d824  phoenix-charge-cap.conf
+8269c86cdd975cfb3338b2ce924fbe8a5844f50047610e534c9e0c875dec7ab3213baa9b80eaa30d96dc23f98e240eaacc5eebf0e2f183efaae61d45290e6a32  phoenix-charge-cap.service
+5ece715fdab6311ce83c8a93065a921f03d0396d08a234f623ead713b59b03e169afdc5c15d861c71ae5494c4010751f416eab989255b5822a7e2f27277ed39c  phoenix-charge-cap.sh
+e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1faa36fd39aa2a5d90a19add355da33168da75ed1c2621fcd24  phoenix-charge-cap.timer
+50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
+d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
+b201b7d25d30afa4d8dc608d2eb052379b41a34e6d8eb12033dcaa4198aec1c855460ec30ef4a875da79651eb688a081af545d9ce992b543c379c040f4cd9ba3  device-xiaomi-phoenix.post-install
+3a25093756b03ae1976a612a569efd52e0173ddb3cd487c953f5a82649cf2050dcb2fea72074b4bf1485b8f89da25cabdd379cd2adf63d3dd68bf9303656cb67  device-xiaomi-phoenix.post-upgrade
 15a5fc589e54cf313998518042dc32a976b7b6c690aa82639a7ddc500d45659b6df39b6e117b338481a8e7aa2e6d706c90428c90073ba727d00ad6e0e0fcd501  doas-user-nopass.conf
-1cc47e6ad55024e0c6b8fe9457557020f32b90e741a75303331c0eeeea05b12508b76194c2abaec5ff2e7bb6ba59ecb49913dc335bb082d3b3493312a812f087  deviceinfo
+038da30192c12a9d0aad77c64ce7662b5596efe336296cec5083a23f35257f767d91d41267eab33f415342da049c18dc7200625a2a8f3577020cdb06bd2f7037  deviceinfo
 0b94aae89479b0d684b1a0e6c498763afa623f11a89ebe96bda2db1ead36c71a3a93a25131eca8bbc51341fe3ff261c7101960e814d9c05cd553287387e6dee0  hexagonrpcd.confd
 f0304347e4b8018b1d3731df4daa2da91b2e3b76ca39e107b3ed2efaaccfa924445868aaf026de14c6808cc56959a486c2062ca2efa5b6f5f2ccbdc9c4919113  modules-initfs
 bd753c03b65b432b03d55b28f96fe501e94f3ee22a1e79987473dee98fd5a2aa617475beacf5a15240367e40ecd66c7ff88564a674eca55e1a9e91684feeaa4c  sudoers-user-nopass.conf

@@ -1,14 +1,21 @@
 [Unit]
 Description=Set deterministic WLAN MAC address for Xiaomi Phoenix
-BindsTo=sys-subsystem-net-devices-wlan0.device
+# Order ourselves BEFORE NetworkManager so the MAC is applied before NM
+# brings wlan0 up; otherwise NM associates with ath10k's random fallback
+# MAC and we have to tear it down again every boot.
+Before=NetworkManager.service
+# We only need to run after the wlan0 netdev exists; the script itself
+# polls /sys/class/net for up to 30s.
 After=sys-subsystem-net-devices-wlan0.device
-Wants=NetworkManager.service
-After=NetworkManager.service
+Wants=sys-subsystem-net-devices-wlan0.device
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'sleep 12; /usr/libexec/phoenix-wlan-mac.sh wlan0'
+# Without RemainAfterExit, BindsTo=/After= on the wlan0 device unit would
+# requeue this oneshot on every netdev flap (ath10k QMI crashes are
+# expected per kernel-patches/0006), accumulating sh+ip processes.
+RemainAfterExit=yes
+ExecStart=/usr/libexec/phoenix-wlan-mac.sh wlan0
 
 [Install]
 WantedBy=multi-user.target
-WantedBy=sys-subsystem-net-devices-wlan0.device
