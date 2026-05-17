@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=15
+pkgrel=16
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -37,15 +37,6 @@ source="
 	90-phoenix-wlan-mac.preset
 	adsp-disable-recovery.service
 	dconf-profile-user
-	phoenix-charge-cap.conf
-	phoenix-charge-cap.service
-	phoenix-charge-cap.sh
-	phoenix-charge-cap.timer
-	phoenix-screen-off.service
-	phoenix-typec-recover.conf
-	phoenix-typec-recover.service
-	phoenix-typec-recover.sh
-	phoenix-typec-recover.timer
 	phoenix-wlan-mac.service
 	phoenix-wlan-mac.sh
 	$pkgname.post-install
@@ -55,6 +46,16 @@ source="
 	hexagonrpcd.confd
 	modules-initfs
 	sudoers-user-nopass.conf
+
+	extra-addon/phoenix-charge-cap.conf
+	extra-addon/phoenix-charge-cap.service
+	extra-addon/phoenix-charge-cap.sh
+	extra-addon/phoenix-charge-cap.timer
+	extra-addon/phoenix-screen-off.service
+	extra-addon/phoenix-typec-recover.conf
+	extra-addon/phoenix-typec-recover.service
+	extra-addon/phoenix-typec-recover.sh
+	extra-addon/phoenix-typec-recover.timer
 "
 
 build() {
@@ -101,10 +102,13 @@ package() {
 	install -Dm644 "$srcdir"/adsp-disable-recovery.service \
 		"$pkgdir"/usr/lib/systemd/system/adsp-disable-recovery.service
 
-	# Optional 24/7-server charge limiter. Pauses charging at 70%, resumes
-	# at 60% (hysteresis). Not enabled by default — opt in for server use
-	# with `systemctl enable --now phoenix-charge-cap.timer`. Adjust band
-	# in /etc/phoenix-charge-cap.conf.
+	# --- Optional server-mode add-ons (source files live in extra-addon/) ----
+	# These ship installed but DISABLED. Opt in per machine with
+	# `systemctl enable --now <unit>`. See extra-addon/README.md for context.
+
+	# Charge limiter. Pauses charging at 70%, resumes at 60% (hysteresis).
+	# Enable: `systemctl enable --now phoenix-charge-cap.timer`
+	# Tune:   /etc/phoenix-charge-cap.conf
 	install -Dm755 "$srcdir"/phoenix-charge-cap.sh \
 		"$pkgdir"/usr/libexec/phoenix-charge-cap.sh
 	install -Dm644 "$srcdir"/phoenix-charge-cap.service \
@@ -114,16 +118,14 @@ package() {
 	install -Dm644 "$srcdir"/phoenix-charge-cap.conf \
 		"$pkgdir"/etc/phoenix-charge-cap.conf
 
-	# Optional headless / server-mode panel blanker. Not enabled by default;
-	# `systemctl enable phoenix-screen-off.service` turns it on for installs
-	# that don't run phosh and want the panel dark.
+	# Panel blanker for headless / multi-user.target installs.
+	# Enable: `systemctl enable --now phoenix-screen-off.service`
 	install -Dm644 "$srcdir"/phoenix-screen-off.service \
 		"$pkgdir"/usr/lib/systemd/system/phoenix-screen-off.service
 
-	# Optional rescue from "stuck as source" typec state. Not enabled by
-	# default; opt in with `systemctl enable --now phoenix-typec-recover.timer`.
-	# Guarded by /etc/phoenix-typec-recover.conf CAP_THRESHOLD (default 30%)
-	# so it never fires during normal charge-cap operation.
+	# Rescue from "stuck as source" typec state after charger removal.
+	# Enable: `systemctl enable --now phoenix-typec-recover.timer`
+	# Tune:   /etc/phoenix-typec-recover.conf
 	install -Dm755 "$srcdir"/phoenix-typec-recover.sh \
 		"$pkgdir"/usr/libexec/phoenix-typec-recover.sh
 	install -Dm644 "$srcdir"/phoenix-typec-recover.service \
@@ -132,6 +134,7 @@ package() {
 		"$pkgdir"/usr/lib/systemd/system/phoenix-typec-recover.timer
 	install -Dm644 "$srcdir"/phoenix-typec-recover.conf \
 		"$pkgdir"/etc/phoenix-typec-recover.conf
+	# ------------------------------------------------------------------------
 
 	# Passwordless root access for default postmarketOS user over doas/sudo.
 	# This mirrors the live fix and makes it persistent across fresh flashes.
