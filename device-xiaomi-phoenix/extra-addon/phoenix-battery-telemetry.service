@@ -1,0 +1,15 @@
+[Unit]
+Description=Phoenix battery and charger telemetry logger
+After=local-fs.target
+ConditionPathExists=/sys/class/power_supply/qcom_qg/voltage_now
+ConditionPathExists=/sys/class/power_supply/pm8150b-charger/status
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/phoenix-battery-telemetry.sh
+Restart=always
+RestartSec=5s
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=18
+pkgrel=19
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -52,6 +52,10 @@ source="
 	extra-addon/phoenix-charge-cap.service
 	extra-addon/phoenix-charge-cap.sh
 	extra-addon/phoenix-charge-cap.timer
+	extra-addon/phoenix-battery-report.sh
+	extra-addon/phoenix-battery-telemetry.conf
+	extra-addon/phoenix-battery-telemetry.service
+	extra-addon/phoenix-battery-telemetry.sh
 	extra-addon/phoenix-screen-off.service
 	extra-addon/phoenix-typec-recover.conf
 	extra-addon/phoenix-typec-recover.service
@@ -126,6 +130,17 @@ package() {
 	install -Dm644 "$srcdir"/phoenix-charge-cap.conf \
 		"$pkgdir"/etc/phoenix-charge-cap.conf
 
+	# Raw battery/charger telemetry and an offline mAh/mWh integrator.
+	# Enable: `systemctl enable --now phoenix-battery-telemetry.service`
+	install -Dm755 "$srcdir"/phoenix-battery-telemetry.sh \
+		"$pkgdir"/usr/libexec/phoenix-battery-telemetry.sh
+	install -Dm755 "$srcdir"/phoenix-battery-report.sh \
+		"$pkgdir"/usr/bin/phoenix-battery-report
+	install -Dm644 "$srcdir"/phoenix-battery-telemetry.service \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-battery-telemetry.service
+	install -Dm644 "$srcdir"/phoenix-battery-telemetry.conf \
+		"$pkgdir"/etc/phoenix-battery-telemetry.conf
+
 	# Panel blanker for headless / multi-user.target installs.
 	# Enable: `systemctl enable --now phoenix-screen-off.service`
 	install -Dm644 "$srcdir"/phoenix-screen-off.service \
@@ -192,9 +207,13 @@ d015b7e28df2213692f18a7ad358310a4df5b5db23356ad864cd07c9990b8080c9883821029a8a9d
 faba3f40aa7a9a936bfe6aa5b422de6d38f2694a38e42fa30a6168ed7f2747202483df4ad2bf6e8f9a264336a95e95ab62a410fcf027e3c174ead7ec613c28e0  90-phoenix-wlan-mac.preset
 fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced29d482d0579313dd16df8a91030c7f6e0374e4025e715af0  adsp-disable-recovery.service
 24aa78ee30672628df4cf8acb48dac3411a8baa4ab0e32d5dc308adecbd82bbe3012e024b4b20c9f6f569817f588f33040d5969ad7a09e3ab69991d0262199df  dconf-profile-user
+bfbd3ed3ae2a19843e4fad3be0d42d2d124dead2e86e50e65b6ff607651e531cd21bc3d44678a4e7bc7e7fc9eb18badebc4c48d2bfa66a768a1b4d2de31924f6  phoenix-battery-report.sh
+343832bc79e0e10f21aa14197e4d2627fc773f46e79fd55043d9d691b75024bc208a09a461fdfd3cfcccc9927ead43be57d1df1f37f6d377168045e6a352d125  phoenix-battery-telemetry.conf
+2b1952d794fc848591873b03d58388093dffac8ef0c6ed255c812b2d150c7bfa403b6728429f8ab3d8321545cac66ce4b1c9db9c7c570086f2cfdb9e60ee6c68  phoenix-battery-telemetry.service
+5dde74ba565dadede7ae6b9a6099ddd9f7e1266cbc445dec8abfb9c6449ae9fc6353e67279803188689310b4fa79eb641c4cae6d53ca464a5f5bfb97378995fe  phoenix-battery-telemetry.sh
 05507cbed39c233ca7b78883ac2fc54a37fdefb00bbd7269fb482351b4e18790d2a36287d2692941c45d4e287bf33f601ce756ff27b1a7bbe0ec65f07a71d824  phoenix-charge-cap.conf
 8269c86cdd975cfb3338b2ce924fbe8a5844f50047610e534c9e0c875dec7ab3213baa9b80eaa30d96dc23f98e240eaacc5eebf0e2f183efaae61d45290e6a32  phoenix-charge-cap.service
-5ece715fdab6311ce83c8a93065a921f03d0396d08a234f623ead713b59b03e169afdc5c15d861c71ae5494c4010751f416eab989255b5822a7e2f27277ed39c  phoenix-charge-cap.sh
+d0a1eb7fba0a684eac99f3decc992d84d37a66dc310c9e09c764d02b6ae173d170d1095485da40769319528fd0875f014396b8a4532606696e60f19c2ba1876e  phoenix-charge-cap.sh
 e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1faa36fd39aa2a5d90a19add355da33168da75ed1c2621fcd24  phoenix-charge-cap.timer
 71126ec16323ef86217561bb992ea0ae17e54327aa68c043f5c7dd6158640b234ad4d7a2dfdf45ff83968128587f0c7158e46b4438e22cfed46bf9271fd3969b  phoenix-screen-off.service
 620ea416f372ed224e41407e667db33a2e693b63f5f258d15be8b660069ce010ff6121643d44f8ec7f37a0d531f2ae48ab1d72093dd5d798e401442d3b8f10ec  phoenix-typec-recover.conf

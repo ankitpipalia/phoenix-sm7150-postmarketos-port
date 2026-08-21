@@ -1,0 +1,32 @@
+From 90741d2c42629a7b5a074b2841c24c24b56ff28b Mon Sep 17 00:00:00 2001
+From: OpenAI Codex <codex@openai.com>
+Date: Thu, 20 Aug 2026 23:57:05 +0000
+Subject: [PATCH 7/9] dt-bindings: power: supply: qcom: add TCPM source
+
+Describe the optional TCPM phandle used to obtain an advertised 5 V source
+current when BC1.2 APSD remains unresolved.
+
+Signed-off-by: OpenAI Codex <codex@openai.com>
+---
+ .../bindings/power/supply/qcom,pmi8998-charger.yaml         | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml b/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml
+index 9e200ba3f..7dc1c3cab 100644
+--- a/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml
++++ b/Documentation/devicetree/bindings/power/supply/qcom,pmi8998-charger.yaml
+@@ -42,6 +42,12 @@ properties:
+ 
+   monitored-battery: true
+ 
++  qcom,tcpm-source:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description:
++      Optional TCPM source-capability power supply used as a conservative
++      input-current fallback when BC1.2 APSD does not complete.
++
+ required:
+   - compatible
+   - reg
+-- 
+2.54.0

@@ -40,7 +40,7 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 | Modem / calls | ⚠️ Remoteproc running, untested |
 | GPS | 🔧 Untested |
 | Sensors | ❌ Not working (missing sensor PD firmware) |
-| Battery / charging | ⚠️ PM6150 binds via `qcom,pm8150b-charger` fallback compatible on v7.1; `STATUS` reflects reality (`Full`/`Charging`), `CHARGE_FULL_DESIGN=4500000`, APSD detects DCP and sets `CURRENT_MAX=1.35 A`. `VOLTAGE_NOW`/`CURRENT_NOW` read 0 unless `STATUS=Charging` (upstream driver design). Hub/PD edge cases still incomplete |
+| Battery / charging | ⚠️ PM6150 charging works. A guarded TCPM fallback permits at most 1.5 A at ~5 V when APSD is unresolved; a completed SDP result can be superseded only by an explicit PD contract. AICL remains enabled and disconnect/capability loss restores the safe 500 mA default. The mainline QGauge percentage remains a voltage-derived estimate, not learned SOC. See [battery and charging notes](docs/BATTERY-CHARGING.md) |
 | GPU / 3D acceleration | ⚠️ DRI device present (card0, renderD128), untested |
 | SD card | 🔧 Untested |
 | NFC | ⚠️ nfc0 detected, untested |
@@ -77,10 +77,14 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── 0003-phoenix-panel.patch                  # NT36672C-based panel driver (panel-g7b-37-02-0a-dsc)
 │   ├── 0004-pm6150-add-charger-support.patch     # USB-C dual-role + sink PDOs on &pm6150_typec (rest of original 0004 is upstream in v7.1)
 │   ├── 0005-add-wcn3998-wifi-bt-power-management.patch  # qup_uart3_sleep cts-pins bias-bus-hold→bias-pull-up; qcom,snoc-host-cap-8bit-quirk on &wifi
-│   └── 0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch  # ath10k QMI host-cap MALFORMED_MSG fallback
+│   ├── 0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch  # ath10k QMI host-cap MALFORMED_MSG fallback
+│   ├── 0007-dt-bindings-power-supply-qcom-add-TCPM-source.patch # optional TCPM source-capability phandle
+│   ├── 0008-power-supply-qcom_smbx-add-guarded-TCPM-ICL-fallback.patch # safe 1.5 A fallback with AICL
+│   └── 0009-arm64-dts-qcom-sm7150-xiaomi-wire-charger-to-TCPM.patch # connect PM6150 charger to TCPM
 │
 ├── docs/
-│   └── FRESH-LINUX-STOCK-ROM.md           # Full clean-host + stock-ROM runbook
+│   ├── BATTERY-CHARGING.md                 # Charger safety design, live results, telemetry and limitations
+│   └── FRESH-LINUX-STOCK-ROM.md            # Full clean-host + stock-ROM runbook
 │
 └── scripts/
     ├── wipe-pmbootstrap-state.sh          # Remove old pmbootstrap state (fresh init)

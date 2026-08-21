@@ -1,0 +1,389 @@
+From 5b4a103449c4416f48ebbd76dbf96769765af9b3 Mon Sep 17 00:00:00 2001
+From: OpenAI Codex <codex@openai.com>
+Date: Thu, 20 Aug 2026 23:57:05 +0000
+Subject: [PATCH 8/9] power: supply: qcom_smbx: add guarded TCPM ICL fallback
+
+Keep the safe 500 mA default while APSD is pending unless TCPM reports an
+online Type-C or PD sink at about 5 V with at least 1.5 A available.
+In that case, cap the request to 1.5 A, retain AICL, and use the SMB5 APSD
+override sequence. Restore the default on capability loss or disconnect.
+
+When APSD returns SDP, require PD before replacing its 500 mA ceiling. This
+supports powered hubs but does not raise the limit for an ordinary USB data
+port.
+
+Also cap charge current using battery data and fix the over-voltage status
+mask.
+
+Signed-off-by: OpenAI Codex <codex@openai.com>
+---
+ drivers/power/supply/qcom_smbx.c | 245 ++++++++++++++++++++++++++++++-
+ 1 file changed, 238 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index 1d1d0416b..bbe9e7a30 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -202,6 +202,9 @@ enum smb_generation {
+ #define CDP_CURRENT_UA					1500000
+ #define DCP_CURRENT_UA					1500000
+ #define CURRENT_MAX_UA					DCP_CURRENT_UA
++#define TCPM_FALLBACK_CURRENT_UA			1500000
++#define TCPM_FALLBACK_MIN_VOLTAGE_UV			4750000
++#define TCPM_FALLBACK_MAX_VOLTAGE_UV			5500000
+ /* clang-format on */
+ 
+ enum charger_status {
+@@ -221,6 +224,14 @@ struct smb_init_register {
+ 	u8 val;
+ };
+ 
++enum smb_icl_source {
++	SMB_ICL_DEFAULT,
++	SMB_ICL_APSD_SDP,
++	SMB_ICL_APSD_CDP,
++	SMB_ICL_APSD_DCP,
++	SMB_ICL_TCPM_FALLBACK,
++};
++
+ /**
+  * struct smb_chip - smb chip structure
+  * @dev:		Device reference for power_supply
+@@ -236,7 +247,11 @@ struct smb_init_register {
+  * @wakeup_enabled:	If the cable IRQ will cause a wakeup
+  * @usb_in_i_chan:	USB_IN current measurement channel
+  * @usb_in_v_chan:	USB_IN voltage measurement channel
++ * @tcpm_psy:		Optional TCPM source capability power supply
+  * @chg_psy:		Charger power supply instance
++ * @icl_source:		Source used to select the requested USB input limit
++ * @requested_icl_ua:	Last USB input limit requested by this driver
++ * @apsd_pending_logged: Whether unresolved APSD was logged this connection
+  */
+ struct smb_chip {
+ 	struct device *dev;
+@@ -255,7 +270,11 @@ struct smb_chip {
+ 	struct iio_channel *usb_in_i_chan;
+ 	struct iio_channel *usb_in_v_chan;
+ 
++	struct power_supply *tcpm_psy;
+ 	struct power_supply *chg_psy;
++	enum smb_icl_source icl_source;
++	unsigned int requested_icl_ua;
++	bool apsd_pending_logged;
+ };
+ 
+ struct smb_match_data {
+@@ -372,7 +391,7 @@ static int smbx_ov_status(struct smb_chip *chip)
+ 	if (rc)
+ 		return rc;
+ 
+-	return !!(reg & mask);
++	return !!(val & mask);
+ }
+ 
+ static int smb_get_prop_status(struct smb_chip *chip, int *val)
+@@ -490,6 +509,8 @@ static inline int smb_get_current_now(struct smb_chip *chip,
+ 	return rc;
+ }
+ 
++static int smb_get_prop_health(struct smb_chip *chip, int *val);
++
+ static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
+ {
+ 	unsigned char val_raw;
+@@ -505,18 +526,170 @@ static int smb_set_current_limit(struct smb_chip *chip, unsigned int val)
+ 			    val_raw);
+ }
+ 
++static int smb_set_icl_override(struct smb_chip *chip, bool enable)
++{
++	int rc;
++
++	if (!enable)
++		return regmap_update_bits(chip->regmap,
++					  chip->base + USBIN_LOAD_CFG,
++					  ICL_OVERRIDE_AFTER_APSD_BIT, 0);
++
++	/* Select high-current mode before making the programmed ICL override
++	 * survive APSD reruns. This follows downstream smblib_set_icl_current()
++	 * while deliberately leaving hardware AICL enabled.
++	 */
++	rc = regmap_update_bits(chip->regmap, chip->base + USBIN_ICL_OPTIONS,
++				USBIN_MODE_CHG_BIT, USBIN_MODE_CHG_BIT);
++	if (rc < 0)
++		return rc;
++
++	return regmap_update_bits(chip->regmap, chip->base + USBIN_LOAD_CFG,
++				  ICL_OVERRIDE_AFTER_APSD_BIT,
++				  ICL_OVERRIDE_AFTER_APSD_BIT);
++}
++
++static const char *smb_icl_source_name(enum smb_icl_source source)
++{
++	switch (source) {
++	case SMB_ICL_APSD_SDP:
++		return "APSD SDP";
++	case SMB_ICL_APSD_CDP:
++		return "APSD CDP";
++	case SMB_ICL_APSD_DCP:
++		return "APSD DCP";
++	case SMB_ICL_TCPM_FALLBACK:
++		return "TCPM fallback";
++	case SMB_ICL_DEFAULT:
++	default:
++		return "safe default";
++	}
++}
++
++static int smb_apply_current_limit(struct smb_chip *chip, unsigned int current_ua,
++				   enum smb_icl_source source)
++{
++	bool fallback = source == SMB_ICL_TCPM_FALLBACK;
++	int rc;
++
++	if (chip->requested_icl_ua == current_ua && chip->icl_source == source)
++		return 0;
++
++	/* Remove a previous software override before returning control to APSD. */
++	if (!fallback) {
++		rc = smb_set_icl_override(chip, false);
++		if (rc < 0)
++			return rc;
++	}
++
++	rc = smb_set_current_limit(chip, current_ua);
++	if (rc < 0)
++		return rc;
++
++	if (fallback) {
++		rc = smb_set_icl_override(chip, true);
++		if (rc < 0)
++			return rc;
++	}
++
++	chip->requested_icl_ua = current_ua;
++	chip->icl_source = source;
++	dev_info(chip->dev, "USB ICL %u uA selected from %s\n", current_ua,
++		 smb_icl_source_name(source));
++
++	return 0;
++}
++
++/*
++ * TCPM only reports ONLINE while this port is consuming VBUS, so ONLINE also
++ * proves that the local Type-C role is sink. Restrict the fallback to a fixed
++ * approximately-5 V contract that explicitly grants at least 1.5 A. AICL and
++ * suspend-on-collapse remain enabled in hardware and may reduce the effective
++ * current below this requested ceiling.
++ */
++static int smb_get_tcpm_fallback_limit(struct smb_chip *chip,
++				       unsigned int *current_ua,
++				       bool require_pd)
++{
++	union power_supply_propval online, voltage, current_max, usb_type;
++	int health, rc;
++
++	if (!chip->tcpm_psy)
++		return -ENODEV;
++
++	rc = power_supply_get_property(chip->tcpm_psy,
++				       POWER_SUPPLY_PROP_ONLINE, &online);
++	if (rc < 0 || !online.intval)
++		return rc < 0 ? rc : -ENOLINK;
++
++	rc = power_supply_get_property(chip->tcpm_psy,
++				       POWER_SUPPLY_PROP_USB_TYPE, &usb_type);
++	if (rc < 0)
++		return rc;
++
++	switch (usb_type.intval) {
++	case POWER_SUPPLY_USB_TYPE_C:
++		if (require_pd)
++			return -EPROTONOSUPPORT;
++		break;
++	case POWER_SUPPLY_USB_TYPE_PD:
++	case POWER_SUPPLY_USB_TYPE_PD_PPS:
++	case POWER_SUPPLY_USB_TYPE_PD_SPR_AVS:
++	case POWER_SUPPLY_USB_TYPE_PD_PPS_SPR_AVS:
++		break;
++	default:
++		return -EPROTONOSUPPORT;
++	}
++
++	rc = power_supply_get_property(chip->tcpm_psy,
++				       POWER_SUPPLY_PROP_VOLTAGE_NOW, &voltage);
++	if (rc < 0)
++		return rc;
++	if (voltage.intval < TCPM_FALLBACK_MIN_VOLTAGE_UV ||
++	    voltage.intval > TCPM_FALLBACK_MAX_VOLTAGE_UV)
++		return -ERANGE;
++
++	rc = power_supply_get_property(chip->tcpm_psy,
++				       POWER_SUPPLY_PROP_CURRENT_MAX, &current_max);
++	if (rc < 0)
++		return rc;
++	if (current_max.intval < TCPM_FALLBACK_CURRENT_UA)
++		return -ERANGE;
++
++	rc = smb_get_prop_health(chip, &health);
++	if (rc < 0)
++		return rc;
++	if (health != POWER_SUPPLY_HEALTH_GOOD)
++		return -EHOSTDOWN;
++
++	*current_ua = min_t(unsigned int, current_max.intval,
++			    TCPM_FALLBACK_CURRENT_UA);
++	*current_ua = min(*current_ua, chip->current_limit_max_ua);
++
++	return 0;
++}
++
+ static void smb_status_change_work(struct work_struct *work)
+ {
+ 	unsigned int charger_type, current_ua;
++	enum smb_icl_source source;
+ 	int usb_online = 0;
+-	int count, rc;
++	int count, fallback_rc, rc;
+ 	struct smb_chip *chip;
+ 
+ 	chip = container_of(work, struct smb_chip, status_change_work.work);
+ 
+-	smb_get_prop_usb_online(chip, &usb_online);
+-	if (!usb_online)
++	rc = smb_get_prop_usb_online(chip, &usb_online);
++	if (rc < 0)
++		return;
++	if (!usb_online) {
++		chip->apsd_pending_logged = false;
++		rc = smb_apply_current_limit(chip, SDP_CURRENT_UA,
++					     SMB_ICL_DEFAULT);
++		if (rc < 0)
++			dev_err(chip->dev, "Failed to restore default ICL: %d\n", rc);
+ 		return;
++	}
+ 
+ 	for (count = 0; count < 3; count++) {
+ 		dev_dbg(chip->dev, "get charger type retry %d\n", count);
+@@ -532,6 +705,32 @@ static void smb_status_change_work(struct work_struct *work)
+ 	}
+ 
+ 	if (rc < 0) {
++		fallback_rc = smb_get_tcpm_fallback_limit(chip, &current_ua,
++							 false);
++		if (!fallback_rc) {
++			fallback_rc = smb_apply_current_limit(chip, current_ua,
++						      SMB_ICL_TCPM_FALLBACK);
++			if (fallback_rc < 0)
++				dev_err(chip->dev,
++					"Failed to apply TCPM fallback ICL: %d\n",
++					fallback_rc);
++		} else {
++			if (chip->icl_source == SMB_ICL_TCPM_FALLBACK) {
++				rc = smb_apply_current_limit(chip, SDP_CURRENT_UA,
++							     SMB_ICL_DEFAULT);
++				if (rc < 0)
++					dev_err(chip->dev,
++						"Failed to restore default ICL: %d\n",
++						rc);
++			}
++			if (!chip->apsd_pending_logged) {
++				dev_info(chip->dev,
++					 "APSD unresolved; TCPM fallback unavailable (%d), keeping safe default\n",
++					 fallback_rc);
++				chip->apsd_pending_logged = true;
++			}
++		}
++
+ 		rc = regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
+ 					APSD_RERUN_BIT, APSD_RERUN_BIT);
+ 		schedule_delayed_work(&chip->status_change_work,
+@@ -539,21 +738,38 @@ static void smb_status_change_work(struct work_struct *work)
+ 		dev_dbg(chip->dev, "get charger type failed, rerun apsd\n");
+ 		return;
+ 	}
++	chip->apsd_pending_logged = false;
+ 
+ 	switch (charger_type) {
+ 	case POWER_SUPPLY_USB_TYPE_CDP:
+ 		current_ua = CDP_CURRENT_UA;
++		source = SMB_ICL_APSD_CDP;
+ 		break;
+ 	case POWER_SUPPLY_USB_TYPE_DCP:
+ 		current_ua = chip->batt_info->constant_charge_current_max_ua;
++		source = SMB_ICL_APSD_DCP;
+ 		break;
+ 	case POWER_SUPPLY_USB_TYPE_SDP:
+ 	default:
+-		current_ua = SDP_CURRENT_UA;
++		/*
++		 * A real PD contract supersedes BC1.2's SDP current ceiling. Plain
++		 * Type-C Rp does not: require negotiated PD before overriding a
++		 * completed SDP classification, as occurs with powered data hubs.
++		 */
++		fallback_rc = smb_get_tcpm_fallback_limit(chip, &current_ua,
++							 true);
++		if (!fallback_rc) {
++			source = SMB_ICL_TCPM_FALLBACK;
++		} else {
++			current_ua = SDP_CURRENT_UA;
++			source = SMB_ICL_APSD_SDP;
++		}
+ 		break;
+ 	}
+ 
+-	smb_set_current_limit(chip, current_ua);
++	rc = smb_apply_current_limit(chip, current_ua, source);
++	if (rc < 0)
++		dev_err(chip->dev, "Failed to apply APSD ICL: %d\n", rc);
+ 	power_supply_changed(chip->chg_psy);
+ }
+ 
+@@ -1043,6 +1259,7 @@ static int smb_probe(struct platform_device *pdev)
+ 	struct power_supply_desc *desc;
+ 	struct smb_chip *chip;
+ 	const struct smb_match_data *match_data;
++	unsigned int fast_charge_current_ua;
+ 	int rc, irq;
+ 
+ 	chip = devm_kzalloc(&pdev->dev, sizeof(*chip), GFP_KERNEL);
+@@ -1078,6 +1295,8 @@ static int smb_probe(struct platform_device *pdev)
+ 	chip->gen = match_data->gen;
+ 	chip->current_step_size_ua = match_data->current_step_size_ua;
+ 	chip->current_limit_max_ua = match_data->current_limit_max_ua;
++	chip->icl_source = SMB_ICL_DEFAULT;
++	chip->requested_icl_ua = 0;
+ 
+ 	dev_info(chip->dev, "Generation %s\n", chip->gen == SMB2 ? "SMB2" : "SMB5");
+ 
+@@ -1111,6 +1330,16 @@ static int smb_probe(struct platform_device *pdev)
+ 	if (chip->batt_info->constant_charge_current_max_ua == -EINVAL)
+ 		chip->batt_info->constant_charge_current_max_ua = DCP_CURRENT_UA;
+ 
++	if (device_property_present(chip->dev, "qcom,tcpm-source")) {
++		chip->tcpm_psy = devm_power_supply_get_by_reference(chip->dev, "qcom,tcpm-source");
++		if (IS_ERR(chip->tcpm_psy))
++			return dev_err_probe(chip->dev, PTR_ERR(chip->tcpm_psy),
++					     "Failed to get TCPM source supply\n");
++		if (!chip->tcpm_psy)
++			return dev_err_probe(chip->dev, -EPROBE_DEFER,
++					     "Waiting for TCPM source supply\n");
++	}
++
+ 	rc = devm_delayed_work_autocancel(chip->dev, &chip->status_change_work,
+ 					  smb_status_change_work);
+ 	if (rc)
+@@ -1156,8 +1385,10 @@ static int smb_probe(struct platform_device *pdev)
+ 	 * would expect this to be changed dynamically based on temperature
+ 	 * reporting.
+ 	 */
++	fast_charge_current_ua = min_t(unsigned int, 1950000,
++				       chip->batt_info->constant_charge_current_max_ua);
+ 	rc = regmap_write(chip->regmap, chip->base + FAST_CHARGE_CURRENT_CFG,
+-			  1950000 / chip->current_step_size_ua);
++			  fast_charge_current_ua / chip->current_step_size_ua);
+ 	if (rc < 0)
+ 		return dev_err_probe(chip->dev, rc,
+ 				     "Couldn't write fast charge current cfg");
+-- 
+2.54.0
