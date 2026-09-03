@@ -10,7 +10,7 @@ was compiled locally but has not yet been installed on the phone. Values below
 are observations from this test device, not guarantees for every Phoenix,
 battery, charger, cable, or USB-C hub.
 
-## Implementation and test status — September 5, 2026 (updated 2026-09-05 00:30 UTC, P0/P1 review fixes)
+## Implementation and test status — September 5, 2026 (updated 2026-09-05 23:33 UTC, P0/P1 review fixes, r22 installed)
 
 | Change | Repository | Device result (live re-audit) |
 | --- | --- | --- |
@@ -59,7 +59,7 @@ The remaining highest-priority validation work is:
 1. Install the rebuilt kernel (r22 with patches 0010+0011) and prove that `charge_behaviour=inhibit-charge` leaves USB input `online=1` while battery current settles near zero. **Live 2026-09-05:** May kernel still lacks `charge_behaviour`; new `0011` fixes float selector, watchdog base, OV notify, ICL ordering/log and revalidation robustness are compile-tested and device-logic-tested (0.847 mWh, thermal fail-open, Vnow emergency), but not yet flashed.
 2. Run controlled low-voltage/source-loss and thermal-input tests before enabling the shutdown guard. **Live:** guard `disabled` as intended; synthetic tests now cover independent channels (`temp 500` with invalid voltage fires, `voltage_now 3300000` vs `voltage_avg 3500000` triggers emergency), sensor-failure policy (12 samples logs + conservative shutdown), and `ConditionPathExists` removed (`Restart=always`); real source-loss still pending.
 3. Exercise SMB5 over-voltage/thermal status reporting and all TCPM source transitions on hardware. **Live:** patches 0010+0011 compile-tested; `dmesg` still old `SMB5 Generation SMB5` without OV fix until flash; `health=Good` cannot validate OV until kernel upgrade. Validate with synthetic register instrumentation, not real OV.
-4. Upgrade the live device package to r22 and verify `20-phoenix-optional.preset` + env-override handling. **Live 2026-09-03 23:07:** r21 installed; r22 (with safety `Restart=always`, charge-cap `START<STOP` +50mV, report `ls -1t` + power integration, telemetry `SCHEMA_VERSION` + online TCPM, typec `lock` + voltage threshold + readback, usb-host-wake `lock` + `exit 1`) built and device-logic-tested, awaiting `apk` upgrade.
+4. Upgrade the live device package to r22 and verify `20-phoenix-optional.preset` + env-override handling. **Live 2026-09-03 23:07:** r21 installed; r22 installed 2026-09-05 23:33 via `apk add --allow-untrusted` (preset `ignore` preserved `telemetry/typec-recover/screen-off/usb-host-wake enabled`, `charge-cap/safety disabled`); `phoenix-battery-safety.service` now `Restart=always` without `ConditionPathExists`, `phoenix-charge-cap.sh` now `START<STOP` +50mV + env override.
 
 ## System architecture
 
@@ -112,8 +112,8 @@ Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-t
 | Charger | `pm8150b-charger online=1 status=Charging health=Good current_max=700000 current_now=694525 voltage_now=4492720` (2026-09-03 23:07) | — |
 | TCPM | `tcpm-source-psy-c440000.spmi:pmic@0:typec@1500 online=1 voltage_now=5000000 current_max=3000000 usb_type=[C] PD PD_PPS ...` (2026-09-03 23:07) | — |
 | Type-C | `port0 power_role=source [sink] data_role=host power_operation_mode=3.0A vconn=no` (both 23:07 and Aug 23 source); at 23:07 `charger online=1 Charging` (previously offline with `current -50mA`); partner present (`port0-partner/` exists) | local port acting as a 5 V/3 A source; SMB charger offline |
-| Device package | `device-xiaomi-phoenix-1-r21` aarch64 (installed `2026-09-03 23:07` via `apk add --allow-untrusted`; `20-phoenix-optional.preset` present) | `device-xiaomi-phoenix-1-r20` (locally built) |
-| Repository package | `device-xiaomi-phoenix-1-r21` (`pkgrel=21` in `APKBUILD:6`, `20-phoenix-optional.preset:+` `phoenix-battery-safety.*`) | `device-xiaomi-phoenix-1-r20` |
+| Device package | `device-xiaomi-phoenix-1-r22` aarch64 (installed `2026-09-05 23:33` via `apk add --allow-untrusted`; `20-phoenix-optional.preset` present, `Restart=always` safety) | `device-xiaomi-phoenix-1-r20` (locally built) |
+| Repository package | `device-xiaomi-phoenix-1-r22` (`pkgrel=22` in `APKBUILD:6`, `20-phoenix-optional.preset` + safety `Restart=always` + charge-cap hysteresis + report `ls -1t`/power) | `device-xiaomi-phoenix-1-r20` |
 | Containers | `phoenix-monitor Up 11 days`, `cloudflared Up ~1h` | Docker monitor and Cloudflare tunnel running |
 | Kubernetes | `phoenix 1 node Ready 91d`; `coredns-8db54c48d-fznfq 1/1`, `local-path-provisioner-5d9d9885bc-44rl9 1/1` (27m), `metrics-server-786d997795-676bp 1/1` (26m) `Running`; `kubectl top node phoenix 489m 6% 1857Mi`; `nft` `cni0 tcp dport {6443,10250}` | node Ready; all three core pods `1/1 Running` after nftables fix |
 | systemd | `system is running`, `--failed 0`; `phoenix-battery-telemetry active running` (uptime `4585s`, boot_id `76258377-...`), `adsp-disable-recovery active exited`, `wlan-mac active exited`; `phoenix-charge-cap.timer disabled` (stopped `22:37`), `safety disabled`; `qbootctl masked`; `preset` `90-phoenix-wlan-mac enable` + `20-phoenix-optional ignore` | — |
@@ -122,14 +122,14 @@ Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-t
 | Security | device `99-user-nopass.conf`/`90-user-nopass` absent (`NOT_EXISTS`); unmanaged `/etc/sudoers.d/user-nopasswd` (`NOPASSWD ALL`, `who-owns: no owner`) still gives passwordless `sudo`; `doas` requires auth (`10-postmarketos.conf` `permit persist :wheel`) | — |
 
 The running kernel was built in May 2026, before the August TCPM/SMB5 safety
-work. The r21 device package is now installed and old manual systemd unit overrides
-have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with `phoenix-eth0-autoup.*`); active helpers now resolve to packaged units in `/usr/lib/systemd/system` via `20-phoenix-optional.preset`, but the May kernel still lacks patch 0010.
+work. The r22 device package is now installed (2026-09-05 23:33) and old manual systemd unit overrides
+have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with `phoenix-eth0-autoup.*`); active helpers now resolve to packaged units in `/usr/lib/systemd/system` via `20-phoenix-optional.preset`, but the May kernel still lacks patches 0010+0011 (needs flash).
 
 ### Fix: eliminate device/repository drift
 
-1. Build and flash a fresh image from current `main`, or upgrade the kernel and
-   `device-xiaomi-phoenix` package together. **Live 2026-09-03 23:07:** r21 package upgraded via `apk`; kernel still requires rebuild/flash to obtain `charge_behaviour`.
-2. Verify the installed package release and kernel build after boot. **Live:** `device-xiaomi-phoenix-1-r21` (`preset 20-phoenix-optional.preset` present), kernel `7.1.0-rc3-sm7150 Sat May 16 21:23:28 UTC` — mismatch documented.
+1. Build and flash a fresh image from current `main` (now r22 + 0010+0011), or upgrade the kernel and
+   `device-xiaomi-phoenix` package together. **Live 2026-09-05 23:33:** r22 package upgraded via `apk` with `mkinitfs`; kernel still requires rebuild/flash to obtain `charge_behaviour` (0010+0011).
+2. Verify the installed package release and kernel build after boot. **Live:** `device-xiaomi-phoenix-1-r22` (`preset 20-phoenix-optional.preset` present, `Restart=always` safety, `START<STOP` hysteresis), kernel `7.1.0-rc3-sm7150 Sat May 16 21:23:28 UTC` — kernel still needs flash (device r22, kernel May).
 3. Completed: old manual `/etc/systemd/system/phoenix-*` units and the stale
    `phoenix-eth0-autoup` units were moved to the dated backup (`/var/backups/phoenix-fix-20260904/systemd-manual/`); active helpers now resolve to packaged units in `/usr/lib/systemd/system` and `20-phoenix-optional.preset` preserves `ignore` for `charge-cap`/`safety`/`telemetry`/`screen-off`/`typec-recover`/`usb-host-wake`.
 4. Completed: `20-phoenix-optional.preset` added to fix the `preset-all` opt-in regression (without `ignore`, `systemctl preset-all` would re-enable disabled server helpers on upgrade). Verified `is-enabled: telemetry enabled, typec-recover enabled, usb-host-wake enabled, screen-off enabled, charge-cap disabled, safety disabled`.
