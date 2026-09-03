@@ -26,8 +26,16 @@ IFNAME=eth0
 SETTLE_SEC=45
 RECHECK_SEC=20
 NM_CONNECTION="Ethernet via Hub"
+LOCK_FILE=/run/lock/phoenix-usb-role.lock
 
 [ -e /etc/phoenix-usb-host-wake.conf ] && . /etc/phoenix-usb-host-wake.conf
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9 2>/dev/null; then
+	logger -t phoenix-usb-host-wake "USB role lock busy (typec-recover running), deferring"
+	exit 0
+fi
 
 # Bail cleanly if the role switch doesn't exist (different kernel / device).
 [ -w "$ROLE_FILE" ] || { logger -t phoenix-usb-host-wake "role file not writable, exiting"; exit 0; }
@@ -64,5 +72,5 @@ while [ $i -lt $RECHECK_SEC ]; do
     i=$((i + 1))
 done
 
-logger -t phoenix-usb-host-wake "FAILED: $IFNAME still missing after role toggle — check hub / cable"
-exit 0
+logger -p daemon.err -t phoenix-usb-host-wake "FAILED: $IFNAME still missing after role toggle — check hub / cable"
+exit 1

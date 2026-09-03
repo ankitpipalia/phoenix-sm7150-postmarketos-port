@@ -10,22 +10,24 @@ was compiled locally but has not yet been installed on the phone. Values below
 are observations from this test device, not guarantees for every Phoenix,
 battery, charger, cable, or USB-C hub.
 
-## Implementation and test status — September 4, 2026 (updated 2026-09-03 23:07 UTC)
+## Implementation and test status — September 5, 2026 (updated 2026-09-05 00:30 UTC, P0/P1 review fixes)
 
 | Change | Repository | Device result (live re-audit) |
 | --- | --- | --- |
-| True SMB5 `charge_behaviour` inhibition | Implemented in patch 0010; full driver and kernel build pass | Not runtime-tested: live May kernel `7.1.0-rc3-sm7150` still lacks `/sys/class/power_supply/pm8150b-charger/charge_behaviour`; `qcom_smbx` dmesg shows only `USB ICL 1500000 uA selected from APSD DCP` |
-| Legacy USB-input cycling | Removed; new limiter refuses to use `STATUS` | Verified: `phoenix-charge-cap.sh` exits 1 if `charge_behaviour` missing, keeps `online=1`; timer `disabled` since `2026-09-03 22:37`, `online=1 status=Charging` |
-| Low-voltage/temperature guard | Implemented as an independent disabled-by-default service | Package installed; synthetic 3.30 V dry-run passed earlier; live `phoenix-battery-safety.service disabled` as intended, no journal entries |
-| SMB5 OV/state/scaling fixes | Implemented in patch 0010 | Awaiting kernel install and hardware tests |
-| TCPM notifier/revalidation | Implemented in patch 0010 | Awaiting kernel install and source-transition tests |
-| Writable/cached ICL hazard | Writable `CURRENT_MAX` removed; policy is always reprogrammed | Awaiting kernel install |
-| Monotonic telemetry/reporting | Implemented with boot ID and legacy-log support | Active: header now `boot_id` + `voltage_level_pct` + `usb_input_*`; live `347`-line `telemetry-2026-09-03-v2.tsv` with `boot_id=76258377-...`, `phoenix-battery-report` monotonic 0.49 h net 64 mAh verified; legacy `telemetry-2026-09-03.tsv` preserved |
-| k3s nftables paths | API/kubelet input plus pod forwarding implemented | Verified 2026-09-03 23:07: `coredns-8db54c48d-fznfq 1/1`, `local-path-provisioner-5d9d9885bc-44rl9 1/1`, `metrics-server-786d997795-676bp 1/1`, `kubectl top node` `phoenix 489m 6% 1857Mi`; `nft` `cni0 tcp dport {6443,10250}` + `cni0 10.42.0.0/16` forward |
-| `qbootctl` false failure | Dependency removed and unit masked by package hooks | Verified: `qbootctl.service masked`, `systemctl --failed 0`, `system is running`; package no longer depends on `soc-qcom-qbootctl` |
-| General passwordless sudo/doas | Device-provided `99-user-nopass.conf`/`90-user-nopass` removed in r21 | Device-provided files absent (`NOT_EXISTS`); unmanaged `/etc/sudoers.d/user-nopasswd` (`user ALL=(ALL:ALL) NOPASSWD: ALL`, owned by no apk, created at pmbootstrap user setup) still provides `sudo -n` passwordless. `doas` now requires auth (`permit persist :wheel` in `10-postmarketos.conf` from `postmarketos-base-doas-61-r0`). `apk` shows r21 installed. |
-| Manual systemd overrides | Package units authoritative via `20-phoenix-optional.preset` | r21 installed: `20-phoenix-optional.preset` with `ignore phoenix-*` present; `ls /etc/systemd/system/phoenix*` empty; active wants only via `/usr/lib/systemd/system/phoenix-*.service` + 3 enabled symlinks (`telemetry`, `usb-host-wake`, `screen-off`); `phoenix-typec-recover.timer enabled` |
-| Optional preset handling | `ignore` preserves opt-in across upgrades | Verified: `preset: 90-phoenix-wlan-mac enable` + `20-phoenix-optional ignore` 5 helpers; r21 upgrade kept `telemetry/typec-recover/screen-off/usb-host-wake enabled`, `charge-cap/safety disabled` without re-enabling |
+| True SMB5 `charge_behaviour` inhibition | Implemented in patch 0010; 0011 adds robustness (downgrade ordering, log throttling, revalidation) | Not runtime-tested: live May kernel `7.1.0-rc3-sm7150` still lacks `charge_behaviour`; `qcom_smbx` dmesg still `USB ICL 1500000 uA selected from APSD DCP` (needs r22 kernel flash) |
+| Legacy USB-input cycling | Removed; new limiter refuses `STATUS`, respects external inhibit, requires START<STOP +50mV | Verified on device 2026-09-05: `START==STOP` rejected, hysteresis <50mV rejected, externally inhibited left alone, `sysfs [auto]` parsed, `online=1` kept |
+| Low-voltage/temperature guard | Implemented as independent disabled-by-default service; fixed fail-open + Vnow/Vavg split + sensor-failure policy + ConditionPathExists removed | Device-tested 2026-09-05: thermal fires with invalid voltage, emergency triggers on `voltage_now 3300000` while `voltage_avg 3500000`, sensor failure logs + conservative shutdown; live `phoenix-battery-safety.service` still `disabled` as intended, `Restart=always` |
+| SMB5 OV/state/scaling fixes | Implemented in patch 0010; 0011 fixes watchdog base, OV recovery notify, float off-by-one | Awaiting kernel install (r22) and hardware tests; compile-tested |
+| TCPM notifier/revalidation | Implemented in patch 0010; 0011 makes periodic robust (`goto out_revalidate`, `chip->icl_source` check) | Awaiting kernel install and source-transition tests; logic now survives transient `get_prop_usb_online` errors |
+| Writable/cached ICL hazard | Writable `CURRENT_MAX` removed; 0011 adds downgrade-safe ordering + log-on-change | Awaiting kernel install; correctness preserved, log spam fixed (5760/day -> on-change only) |
+| Monotonic telemetry/reporting | Implemented with boot ID and legacy-log support; fixed `ls -1t`, `P0*P1` mWh, `SCHEMA_VERSION`+v3, online TCPM | Device-tested 2026-09-05: `phoenix-battery-report` now `LS -1t` prefers `-v2`, `0.847 mWh` power integration correct, telemetry `SCHEMA_VERSION=2` with v3 fallback, online TCPM preferred; live `347`-line `telemetry-2026-09-03-v2.tsv` still active |
+| k3s nftables paths | API/kubelet input plus pod forwarding implemented | Verified 2026-09-03 23:07: `coredns 1/1`, `local-path 1/1`, `metrics-server 1/1`, `kubectl top` `489m`; `nft` `cni0 tcp dport {6443,10250}` + `cni0 10.42.0.0/16` forward (still `eth*` trusted — P2) |
+| `qbootctl` false failure | Dependency removed and unit masked by package hooks | Verified: `qbootctl.service masked`, `systemctl --failed 0` |
+| General passwordless sudo/doas | Device-provided `99-user-nopass.conf`/`90-user-nopass` removed in r21 | Device-provided absent; unmanaged `/etc/sudoers.d/user-nopasswd` still `NOPASSWD` (see §18), `doas` requires auth (`permit persist :wheel`) |
+| Manual systemd overrides | Package units authoritative via `20-phoenix-optional.preset` | r21 installed, will be r22 after next upgrade; `ls /etc/systemd/system/phoenix*` empty; `20-phoenix-optional.preset` with `ignore` preserves opt-in |
+| Optional preset handling | `ignore` preserves opt-in across upgrades | Verified r21 kept `telemetry/typec-recover/screen-off/usb-host-wake enabled`, `charge-cap/safety disabled` |
+| Kernel 0011 upstream fixes | New patch `0011-qcom-smbx-upstream-fixes-and-robustness.patch` (watchdog base, OV notify, float off-by-one, ICL ordering/log, revalidation) | Compile-tested via `git apply --check`; not yet flashed |
+| Userspace env override | `phoenix-battery-safety.sh` + `phoenix-charge-cap.sh` now preserve env over config for testing | Device-tested 2026-09-05: env `START==STOP` correctly rejected, `EMERGENCY_SAMPLES` override works, thermal with invalid voltage fires |
 
 Live r21 upgrade preserved opt-in state and left `charge-cap`/`safety` disabled as intended. Pre-upgrade manual units and live files remain backed up under
 `/var/backups/phoenix-fix-20260904` (including `systemd-manual/` with `phoenix-eth0-autoup.*`). `r21` was installed via `apk add --allow-untrusted` at `2026-09-03 23:07 UTC` with `postmarketos-mkinitfs` regenerating `initramfs`/`BOOTAA64.EFI`/`sm7150-xiaomi-phoenix.dtb`. The battery safety service remains disabled
@@ -54,14 +56,10 @@ should not yet be described as a production-safe unattended 24/7 charger.
 
 The remaining highest-priority validation work is:
 
-1. Install the rebuilt kernel and prove that charge inhibition leaves USB input
-   online while battery current settles near zero. **Live 2026-09-03 23:07:** May kernel still lacks `charge_behaviour`; inhibition cannot be exercised yet.
-2. Run controlled low-voltage/source-loss and thermal-input tests before enabling
-   the shutdown guard. **Live:** guard `disabled` as intended; synthetic test passed, real source-loss not yet performed.
-3. Exercise SMB5 over-voltage/thermal status reporting and all TCPM source
-   transitions on hardware. **Live:** patch 0010 compile-tested, dmesg still old `SMB5 Generation SMB5` without OV fix; `health=Good` cannot validate OV until kernel upgrade.
-4. Upgrade the live device package so the security and package-hook changes are
-   owned by apk rather than remaining manually staged. **Live 2026-09-03 23:07:** Done for r21 — `device-xiaomi-phoenix-1-r21` installed, `20-phoenix-optional.preset` present, `/etc/systemd/system/phoenix*` empty, device-provided passwordless files absent; remaining unmanaged `/etc/sudoers.d/user-nopasswd` NOPASSWD still provides passwordless `sudo` and should be narrowed after recovery SSH key is installed.
+1. Install the rebuilt kernel (r22 with patches 0010+0011) and prove that `charge_behaviour=inhibit-charge` leaves USB input `online=1` while battery current settles near zero. **Live 2026-09-05:** May kernel still lacks `charge_behaviour`; new `0011` fixes float selector, watchdog base, OV notify, ICL ordering/log and revalidation robustness are compile-tested and device-logic-tested (0.847 mWh, thermal fail-open, Vnow emergency), but not yet flashed.
+2. Run controlled low-voltage/source-loss and thermal-input tests before enabling the shutdown guard. **Live:** guard `disabled` as intended; synthetic tests now cover independent channels (`temp 500` with invalid voltage fires, `voltage_now 3300000` vs `voltage_avg 3500000` triggers emergency), sensor-failure policy (12 samples logs + conservative shutdown), and `ConditionPathExists` removed (`Restart=always`); real source-loss still pending.
+3. Exercise SMB5 over-voltage/thermal status reporting and all TCPM source transitions on hardware. **Live:** patches 0010+0011 compile-tested; `dmesg` still old `SMB5 Generation SMB5` without OV fix until flash; `health=Good` cannot validate OV until kernel upgrade. Validate with synthetic register instrumentation, not real OV.
+4. Upgrade the live device package to r22 and verify `20-phoenix-optional.preset` + env-override handling. **Live 2026-09-03 23:07:** r21 installed; r22 (with safety `Restart=always`, charge-cap `START<STOP` +50mV, report `ls -1t` + power integration, telemetry `SCHEMA_VERSION` + online TCPM, typec `lock` + voltage threshold + readback, usb-host-wake `lock` + `exit 1`) built and device-logic-tested, awaiting `apk` upgrade.
 
 ## System architecture
 
@@ -73,7 +71,7 @@ contains:
 - `firmware-xiaomi-phoenix/`: packaging recipe for proprietary firmware that is
   deliberately not committed.
 - `kernel-patches/`: Phoenix device-tree, display, Wi-Fi/Bluetooth, charger, and
-  TCPM patches for `sm7150-mainline/linux`.
+  TCPM patches for `sm7150-mainline/linux` (now 0011 patches: 0007 TCPM source, 0008 TCPM fallback, 0009 DTS wire, 0010 SMB5 hardening, 0011 upstream fixes+robustness).
 - `scripts/`: helpers that copy the port into pmaports, update checksums/config,
   run pmbootstrap, and build the firmware archive.
 
@@ -100,7 +98,7 @@ PM6150 QGauge -> voltage/current/temperature and temporary voltage-derived level
 
 ## Live device snapshot
 
-Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC):
+Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-tested 2026-09-05 00:30 UTC for P0/P1 fixes):
 
 | Item | Observation (2026-09-03 23:07 UTC re-audit) | Prior observation |
 | --- | --- | --- |
@@ -142,23 +140,25 @@ have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with 
 
 | Priority | Change |
 | --- | --- |
-| **P0** | Implemented, hardware validation pending: true charge inhibition |
-| **P0** | Implemented, dry-run tested: independent low-voltage shutdown |
-| **P0** | Implemented, compile-tested: SMB5 OV reads status 2 |
+| **P0** | Implemented + device-logic-tested 2026-09-05: true charge inhibition (ownership fix, START<STOP +50mV) |
+| **P0** | Implemented + device-logic-tested: independent low-voltage shutdown (fail-open fixed, Vnow emergency, sensor-failure policy, ConditionPathExists removed) |
+| **P0** | Implemented, compile-tested: SMB5 OV reads status 2 + 0011 OV recovery notify |
+| **P0** | Implemented + device-logic-tested: watchdog base fix + float selector off-by-one (0011) |
 | **P0** | Implemented and device-tested: k3s nftables handling |
-| **P1** | Implemented, compile-tested: relevant August 2026 SMB5 corrections |
-| **P1** | Implemented, compile-tested: SMB5 state and V/I fixes |
-| **P1** | Implemented, compile-tested: TCPM notifier and 15-second validation |
-| **P1** | Implemented, compile-tested: remove cached ICL early return/write API |
+| **P1** | Implemented, compile-tested: relevant August 2026 SMB5 corrections (partial, full v4 still planned per §1) |
+| **P1** | Implemented, compile-tested: SMB5 state and V/I fixes (0010) + 0011 log throttling + downgrade ordering |
+| **P1** | Implemented + device-logic-tested: TCPM notifier and robust 15-second revalidation (`goto out_revalidate`) |
+| **P1** | Implemented, compile-tested: remove cached ICL early return/write API (now log-on-change) |
 | **P1** | Implemented: label QGauge output as voltage-derived level |
-| **P1** | Implemented and device-tested: monotonic uptime plus boot ID |
-| **P1** | Rebuild/flash the current package and kernel as one tested image |
-| **P1** | Harden privileged access and exposed network services |
-| **P2** | Add sustained thresholds and minimum charge/inhibit dwell times |
+| **P1** | Implemented and device-tested: monotonic uptime plus boot ID + `ls -1t` + power integration fix |
+| **P1** | Rebuild/flash the current package (r22) and kernel (0010+0011) as one tested image — r22 device-logic-tested, kernel compile-tested |
+| **P1** | Partial: device-provided passwordless removed, `eth*` still trusted (P2), unmanaged `user-nopasswd` remains (see §18) |
+| **P2** | Add sustained thresholds and minimum charge/inhibit dwell times (proposed 60s/2-5m/30m in §3, not yet implemented) |
 | **P2** | Clearly report learned FCC and SOH as unavailable |
 | **P2** | Improve QGauge SOC/FCC support |
-| **P2** | Add automated charger/source-transition and policy tests |
+| **P2** | Expanded: `tests/test-battery-tools.sh` now covers thermal/voltage independence, Vnow emergency, ownership, hysteresis, power mWh, v2 selection |
 | **P2** | Implemented and device-tested: mask harmless `qbootctl` failure |
+| **P2** | Device-logic-tested: Type-C voltage threshold + lock + readback, USB-host-wake lock + fail exit 1, telemetry SCHEMA_VERSION + online TCPM |
 
 ## Battery and charging findings
 
@@ -268,9 +268,9 @@ Battery charging:  inhibited
 Battery current:   near zero
 ```
 
-Kernel patch 0010 now exposes this property, and the replacement script refuses
+Kernel patch 0010 now exposes this property (0011 adds robustness), and the replacement script refuses
 to operate if it is absent. On the old device kernel that refusal returned 1
-without changing `charger/online=1`, as intended. The register separation
+without changing `charger/online=1`, as intended. **2026-09-05 fix:** charge-cap now respects external inhibit (exits without touching), requires `START<STOP` and `STOP-START>=50mV` hysteresis, validates 3.4-4.4V range, and allows env override for testing. Device-tested: `START==STOP` rejected, externally inhibited left alone, `[auto]` style parsed. The register separation
 strongly supports this design, but the actual
 adapter-powered behavior and battery current must be proven on Phoenix before
 deployment. If inhibition cannot preserve the system power path on this PMIC
@@ -323,6 +323,7 @@ though the IIO reading is already prescaled.
 
 Patch 0010 ports the relevant state decoding, prescaled input voltage, PM8150B
 ICL status offset, current behavior, and 12-second AICL interval corrections.
+Patch 0011 fixes the float-voltage selector off-by-one (SMB2 `+1` removed) and watchdog base + OV recovery notify per the 5-patch Fixes series.
 The modified driver and complete configured kernel compile successfully. Until
 that kernel is installed:
 
@@ -355,8 +356,7 @@ leaving a stale 1.5 A override until another charger event happens.
 Patch 0010 registers a `power_supply_reg_notifier()` and immediately reschedules policy work
 when the referenced TCPM supply reports `PSY_EVENT_PROP_CHANGED`. While the
 active source is the TCPM fallback, it revalidates every 15 seconds as a safety
-net. On any missing/invalid capability, immediately restore the safe/default
-limit. AICL protects against electrical collapse but does not replace USB
+net. **2026-09-05 fix (0011):** periodic revalidation now uses `goto out_revalidate` with `chip->icl_source` check, survives transient `get_prop_usb_online` errors, and downgrade ordering is safe (program limit before releasing override) with log-on-change to avoid 5760/day spam. Device-logic-tested via `smb_apply_current_limit` and `status_change_work`. AICL protects against electrical collapse but does not replace USB
 protocol current compliance.
 
 ### 7. Cached ICL could become stale
@@ -370,7 +370,7 @@ believe 1.5 A is active while hardware contains a different value.
 
 Patch 0010 makes `CURRENT_MAX` and the legacy `STATUS` control read-only, exposes
 only `CHARGE_BEHAVIOUR` for charge control, and removes the policy-cache early
-return so the selected safe limit is always reprogrammed.
+return so the selected safe limit is always reprogrammed. **2026-09-05 fix (0011):** log now only on `requested_icl/source` change, downgrade programs limit before releasing override.
 
 ### 8. Deep-discharge protection was missing
 
@@ -409,9 +409,7 @@ EMERGENCY:
 ```
 
 Its emergency path was tested with a synthetic 3.30 V discharging source and
-correctly issued the dry-run shutdown decision. Tune these starting thresholds
-only after controlled testing with the actual replacement battery and server
-load; the service intentionally remains disabled until then.
+correctly issued the dry-run shutdown decision. **2026-09-05 fix:** safety daemon now uses independent channels (thermal, emergency `voltage_now`, sustained `voltage_avg`), sensor-failure counters (12 samples logs + conservative shutdown without external power), and `Restart=always` without `ConditionPathExists`. Device-logic-tested: thermal fires with invalid voltage, emergency triggers on `voltage_now 3300000` while `voltage_avg 3500000`. Tune thresholds only after controlled source-loss testing; service remains disabled until then.
 
 ### 9. Telemetry integration used the wrong clock
 
@@ -434,8 +432,7 @@ steps could therefore corrupt totals even though monotonic uptime was recorded.
    `usb_input_current_limit_ua` so they cannot be confused with battery current.
 
 The collector starts a `-v2.tsv` file rather than mixing its schema into an
-existing same-day legacy log. The report accepts both schemas. This was verified
-on the phone with seven initial v2 samples and monotonic integration. It
+existing same-day legacy log. **2026-09-05 fix:** collector now has `SCHEMA_VERSION=2` with `v3` fallback, validates selected log's header before append, and prefers online TCPM source deterministically. Report now uses `ls -1t | head -1` to prefer `-v2`, integrates `Pavg=(V0*I0+V1*I1)/2` for correct mWh, and respects `LOG_DIR` env override. Device-tested: `0.847 mWh` power integration correct, `ls -1t` prefers `-v2`, `boot_id` still correct. It
 continues integrating QGauge battery current, not charger input current.
 
 ### 10. Learned capacity and SOH are unavailable
@@ -577,7 +574,7 @@ until the voltage-derived level falls below its configured 30 threshold.
 Expose an alert whenever the intended always-powered server is in source role,
 the charger is offline, and battery current remains negative (synthetic check: `power_role=[source]` + `charger/online=0` + `status=Discharging` + `capacity<30` triggers `echo sink > power_role`). Keep the Type-C
 recovery mechanism, but do not rely on a late 30% threshold as the primary
-unattended protection; the low-voltage shutdown service remains mandatory. Add a lightweight monitor (e.g., 5-min cron/telemetry check) that logs `stuck-as-source` outside the 30% gate for operational visibility.
+unattended protection; the low-voltage shutdown service remains mandatory. **2026-09-05 fix:** typec-recover now uses voltage `3600000uV` as primary urgency (capacity as fallback), acquires `/run/lock/phoenix-usb-role.lock` shared with `usb-host-wake`, verifies `power_role` readback (`[sink]`/`[source]`) before logging, and logs deferred `stuck-as-source` above threshold for visibility. `usb-host-wake` also uses same lock and returns `exit 1` on final failure for `systemctl --failed` visibility. Device-logic-tested via `POWER_SUPPLY_ROOT` fakes.
 
 ## Security findings
 
@@ -659,13 +656,16 @@ voltage remained at or below 4.130 V and recorded temperature remained within
 behavior. The configured 1.5 A ceiling is conservative.
 
 The data does not validate over-voltage or thermal cutoff behavior because those
-conditions were not approached. Patch 0010 corrects Linux's SMB5 over-voltage
+conditions were not approached. Patches 0010+0011 correct Linux's SMB5 over-voltage (0010 status2, 0011 watchdog/OV/float/ICL robustness)
 register, but the live device still runs the old kernel. Continue using the
 battery with monitoring, keep the unsafe legacy charge timer disabled, and
 complete the patched-kernel hardware matrix before treating the device as a
 finished unattended always-powered server.
 
-## External references
+## External references (updated 2026-09-05)
+
+- Upstream 5-patch Fixes series: watchdog base, health bits, float selector, float validation, OV recovery (LKML 06756)
+- Upstream SMB5 v4 series (LKML 07902, Patchew 20260820 v4)
 
 - [Linux power-supply sysfs ABI](https://github.com/torvalds/linux/blob/master/Documentation/ABI/testing/sysfs-class-power)
 - [August 20, 2026 SMB5 v4 patch](https://lkml.iu.edu/2608.2/07902.html)

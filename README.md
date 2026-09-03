@@ -79,7 +79,8 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── 0007-dt-bindings-power-supply-qcom-add-TCPM-source.patch # optional TCPM source-capability phandle
 │   ├── 0008-power-supply-qcom_smbx-add-guarded-TCPM-ICL-fallback.patch # safe 1.5 A fallback with AICL
 │   ├── 0009-arm64-dts-qcom-sm7150-xiaomi-wire-charger-to-TCPM.patch # connect PM6150 charger to TCPM
-│   └── 0010-qcom-smbx-harden-smb5-charging-policy.patch # true charge inhibition, SMB5 corrections and TCPM revalidation
+│   ├── 0010-qcom-smbx-harden-smb5-charging-policy.patch # true charge inhibition, SMB5 corrections and TCPM revalidation
+│   └── 0011-qcom-smbx-upstream-fixes-and-robustness.patch # watchdog/OV/float fixes, ICL ordering, revalidation robustness
 │
 ├── docs/
 │   ├── BATTERY-CHARGING.md                 # Charger safety design, live results, telemetry and limitations

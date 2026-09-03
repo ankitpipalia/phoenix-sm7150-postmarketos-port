@@ -3,13 +3,24 @@
 # New logs are segmented by boot_id; legacy logs are segmented on uptime reset.
 set -eu
 
-LOG_DIR=/var/log/phoenix-battery
-MAX_GAP_SECONDS=30
+LOG_DIR=${LOG_DIR:-/var/log/phoenix-battery}
+MAX_GAP_SECONDS=${MAX_GAP_SECONDS:-30}
+_orig_LOG_DIR=$LOG_DIR
+_orig_MAX_GAP=$MAX_GAP_SECONDS
 [ -r /etc/phoenix-battery-telemetry.conf ] && . /etc/phoenix-battery-telemetry.conf
+# Env takes precedence for testing (preserve original if set via env)
+if [ "$_orig_LOG_DIR" != "/var/log/phoenix-battery" ]; then
+	LOG_DIR=$_orig_LOG_DIR
+fi
+if [ "$_orig_MAX_GAP" != "30" ]; then
+	MAX_GAP_SECONDS=$_orig_MAX_GAP
+fi
 
 file=${1:-}
 if [ -z "$file" ]; then
-	file=$(ls -1 "$LOG_DIR"/telemetry-*.tsv 2>/dev/null | tail -n 1 || true)
+	# Prefer newest mtime; on ties prefer -v2 schema (lexicographically later but time-based)
+	# Use -t to avoid picking legacy file when both exist for same day.
+	file=$(ls -1t "$LOG_DIR"/telemetry-*.tsv 2>/dev/null | head -n 1 || true)
 fi
 [ -n "$file" ] && [ -r "$file" ] || {
 	echo "usage: $0 [telemetry.tsv]" >&2
@@ -62,9 +73,12 @@ NR == 1 {
 			segments++
 		} else if (dt <= maxgap) {
 			avg_i = (prev_current + current) / 2
-			avg_v = (prev_voltage + voltage) / 2
 			q_mah = avg_i * dt / 3600000
-			e_mwh = avg_v * avg_i * dt / 3600000000000
+			# Energy: integrate power, not avg(V)*avg(I)
+			p0 = prev_voltage * prev_current
+			p1 = voltage * current
+			avg_p = (p0 + p1) / 2
+			e_mwh = avg_p * dt / 3600000000000
 			net_mah += q_mah
 			net_mwh += e_mwh
 			integrated_s += dt

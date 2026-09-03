@@ -23,8 +23,8 @@ capacity must be measured by integrating current over a controlled test.
 
 ## Charger driver changes
 
-Patches 0007 through 0010 add an optional TCPM power-supply reference, a guarded
-USB input-current fallback, and hardened SMB5 control to `qcom_smbx`.
+Patches 0007 through 0011 add an optional TCPM power-supply reference, a guarded
+USB input-current fallback, hardened SMB5 control and upstream Fixes robustness to `qcom_smbx` (0011: watchdog base, OV recovery, float off-by-one, ICL ordering/log, revalidation).
 
 Normal BC1.2 APSD results remain authoritative for CDP and DCP. The driver keeps
 the 500 mA safe default unless all relevant fallback checks pass:

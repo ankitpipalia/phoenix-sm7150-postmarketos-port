@@ -1,0 +1,153 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Phoenix Port <phoenix@example.com>
+Date: Fri, 5 Sep 2026 12:00:00 +0530
+Subject: [PATCH 11/11] power: supply: qcom_smbx: upstream fixes and robustness
+
+Fix watchdog base, battery OV recovery notification, float-voltage
+selector off-by-one, downgrade-safe ICL ordering, log spam, and make
+TCPM fallback revalidation robust against transient errors (common
+exit with periodic reschedule even after early returns).
+
+These are the 5-patch Fixes prerequisite plus the robustness improvements
+identified in the P0/P1 review.
+
+Signed-off-by: Phoenix Port <phoenix@example.com>
+---
+ drivers/power/supply/qcom_smbx.c | 45 +++++++++++++++++++-------------
+ 1 file changed, 27 insertions(+), 18 deletions(-)
+
+--- a/drivers/power/supply/qcom_smbx.c	2026-09-04 04:57:48
++++ b/drivers/power/supply/qcom_smbx.c	2026-09-04 04:57:48
+@@ -608,29 +608,42 @@ static int smb_apply_current_limit(struct smb_chip *ch
+ 				   enum smb_icl_source source)
+ {
+ 	bool fallback = source == SMB_ICL_TCPM_FALLBACK;
++	bool was_fallback = chip->icl_source == SMB_ICL_TCPM_FALLBACK;
+ 	int rc;
+ 
+-	/* Remove a previous software override before returning control to APSD. */
+-	if (!fallback) {
++	if (!fallback && was_fallback) {
++		/* Downgrade: program safe limit while override still active, then release */
++		rc = smb_set_current_limit(chip, current_ua);
++		if (rc < 0)
++			return rc;
+ 		rc = smb_set_icl_override(chip, false);
+ 		if (rc < 0)
+ 			return rc;
+-	}
+-
+-	rc = smb_set_current_limit(chip, current_ua);
+-	if (rc < 0)
+-		return rc;
++	} else {
++		/* Remove a previous software override before returning control to APSD. */
++		if (!fallback) {
++			rc = smb_set_icl_override(chip, false);
++			if (rc < 0)
++				return rc;
++		}
+ 
+-	if (fallback) {
+-		rc = smb_set_icl_override(chip, true);
++		rc = smb_set_current_limit(chip, current_ua);
+ 		if (rc < 0)
+ 			return rc;
++
++		if (fallback) {
++			rc = smb_set_icl_override(chip, true);
++			if (rc < 0)
++				return rc;
++		}
+ 	}
+ 
++	if (chip->requested_icl_ua != current_ua || chip->icl_source != source) {
++		dev_info(chip->dev, "USB ICL %u uA selected from %s\n", current_ua,
++			 smb_icl_source_name(source));
++	}
+ 	chip->requested_icl_ua = current_ua;
+ 	chip->icl_source = source;
+-	dev_info(chip->dev, "USB ICL %u uA selected from %s\n", current_ua,
+-		 smb_icl_source_name(source));
+ 
+ 	return 0;
+ }
+@@ -716,14 +729,14 @@ static void smb_status_change_work(struct work_struct 
+ 
+ 	rc = smb_get_prop_usb_online(chip, &usb_online);
+ 	if (rc < 0)
+-		return;
++		goto out_revalidate;
+ 	if (!usb_online) {
+ 		chip->apsd_pending_logged = false;
+ 		rc = smb_apply_current_limit(chip, SDP_CURRENT_UA,
+ 					     SMB_ICL_DEFAULT);
+ 		if (rc < 0)
+ 			dev_err(chip->dev, "Failed to restore default ICL: %d\n", rc);
+-		return;
++		goto out_revalidate;
+ 	}
+ 
+ 	for (count = 0; count < 3; count++) {
+@@ -743,7 +756,7 @@ static void smb_status_change_work(struct work_struct 
+ 				dev_err(chip->dev,
+ 					"Failed to restore default ICL: %d\n", rc);
+ 		}
+-		return;
++		goto out_revalidate;
+ 	}
+ 
+ 	if (rc < 0) {
+@@ -813,8 +826,8 @@ static void smb_status_change_work(struct work_struct 
+ 	if (rc < 0)
+ 		dev_err(chip->dev, "Failed to apply APSD ICL: %d\n", rc);
+ 	power_supply_changed(chip->chg_psy);
+-
+-	if (!rc && source == SMB_ICL_TCPM_FALLBACK)
++out_revalidate:
++	if (chip->icl_source == SMB_ICL_TCPM_FALLBACK)
+ 		mod_delayed_work(system_wq, &chip->status_change_work,
+ 				 msecs_to_jiffies(15000));
+ }
+@@ -1025,13 +1038,21 @@ static irqreturn_t smb_handle_batt_overvoltage(int irq
+ static irqreturn_t smb_handle_batt_overvoltage(int irq, void *data)
+ {
+ 	struct smb_chip *chip = data;
++	int rc;
+ 
+-	if (smbx_ov_status(chip) == 1) {
++	rc = smbx_ov_status(chip);
++	if (rc < 0) {
++		dev_err(chip->dev, "could not read overvoltage status: %d\n", rc);
++		return IRQ_HANDLED;
++	}
++
++	if (rc) {
+ 		/* The hardware stops charging automatically */
+ 		dev_err(chip->dev, "battery overvoltage detected\n");
+-		power_supply_changed(chip->chg_psy);
+ 	}
+ 
++	power_supply_changed(chip->chg_psy);
++
+ 	return IRQ_HANDLED;
+ }
+ 
+@@ -1063,7 +1084,7 @@ static irqreturn_t smb_handle_wdog_bark(int irq, void 
+ 
+ 	power_supply_changed(chip->chg_psy);
+ 
+-	rc = regmap_write(chip->regmap, BARK_BITE_WDOG_PET,
++	rc = regmap_write(chip->regmap, chip->base + BARK_BITE_WDOG_PET,
+ 			  BARK_BITE_WDOG_PET_BIT);
+ 	if (rc < 0)
+ 		dev_err(chip->dev, "Couldn't pet the dog rc=%d\n", rc);
+@@ -1440,7 +1461,7 @@ static int smb_probe(struct platform_device *pdev)
+ 			return rc;
+ 	}
+ 
+-	rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500 + 1;
++	rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500;
+ 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
+ 				FLOAT_VOLTAGE_SETTING_MASK, rc);
+ 	if (rc < 0)

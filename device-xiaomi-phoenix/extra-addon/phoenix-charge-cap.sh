@@ -6,6 +6,9 @@
 # the adapter continues to power the system.
 set -eu
 
+for _v in START_VOLTAGE_UV STOP_VOLTAGE_UV POWER_SUPPLY_ROOT RUN_DIR; do
+	eval "_env_$_v=\${$_v-__unset__}"
+done
 START_VOLTAGE_UV=${START_VOLTAGE_UV:-4000000}
 STOP_VOLTAGE_UV=${STOP_VOLTAGE_UV:-4100000}
 POWER_SUPPLY_ROOT=${POWER_SUPPLY_ROOT:-/sys/class/power_supply}
@@ -13,6 +16,10 @@ RUN_DIR=${RUN_DIR:-/run}
 
 [ -r /etc/phoenix-charge-cap.conf ] && . /etc/phoenix-charge-cap.conf
 [ -r /etc/default/phoenix-charge-cap ] && . /etc/default/phoenix-charge-cap
+for _v in START_VOLTAGE_UV STOP_VOLTAGE_UV POWER_SUPPLY_ROOT RUN_DIR; do
+	eval "_env_val=\${_env_$_v}"
+	if [ "$_env_val" != "__unset__" ]; then eval "$_v=\${_env_val}"; fi
+done
 
 valid_uint() {
 	case "$1" in
@@ -29,9 +36,21 @@ behaviour_is() {
 }
 
 if ! valid_uint "$START_VOLTAGE_UV" || ! valid_uint "$STOP_VOLTAGE_UV" ||
-   [ "$START_VOLTAGE_UV" -gt "$STOP_VOLTAGE_UV" ]; then
+   [ "$START_VOLTAGE_UV" -ge "$STOP_VOLTAGE_UV" ]; then
 	logger -p daemon.err -t phoenix-charge-cap \
-		"invalid voltage thresholds: require START_VOLTAGE_UV <= STOP_VOLTAGE_UV"
+		"invalid voltage thresholds: require START_VOLTAGE_UV < STOP_VOLTAGE_UV"
+	exit 1
+fi
+# Require at least 50 mV hysteresis to avoid toggling
+if [ $((STOP_VOLTAGE_UV - START_VOLTAGE_UV)) -lt 50000 ]; then
+	logger -p daemon.err -t phoenix-charge-cap \
+		"hysteresis too small: STOP - START must be >= 50000 uV"
+	exit 1
+fi
+# Sanity against battery range (3.4-4.4V design)
+if [ "$START_VOLTAGE_UV" -lt 3400000 ] || [ "$STOP_VOLTAGE_UV" -gt 4400000 ]; then
+	logger -p daemon.err -t phoenix-charge-cap \
+		"thresholds outside 3.4-4.4V battery range"
 	exit 1
 fi
 
@@ -54,10 +73,14 @@ valid_uint "$voltage_uv" || exit 0
 
 current_behaviour=$(cat "$behaviour" 2>/dev/null || echo unknown)
 
-# Reconstruct state after a service or system restart from the kernel property.
-if behaviour_is inhibit-charge; then
-	: > "$state"
-elif behaviour_is auto; then
+# Ownership: state file means *we* performed the inhibit.
+# If kernel is inhibit-charge but we have no state file, it was external — do not touch.
+if behaviour_is inhibit-charge && [ ! -e "$state" ]; then
+	logger -p daemon.info -t phoenix-charge-cap \
+		"externally inhibited (${current_behaviour}), leaving alone"
+	exit 0
+fi
+if behaviour_is auto; then
 	rm -f "$state"
 fi
 

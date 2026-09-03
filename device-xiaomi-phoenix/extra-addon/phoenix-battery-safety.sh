@@ -2,6 +2,10 @@
 # Orderly shutdown guard for unattended Phoenix server deployments.
 set -eu
 
+# Save env for testing (allow env to override config)
+for _v in INTERVAL_SECONDS SHUTDOWN_VOLTAGE_UV SHUTDOWN_SAMPLES EMERGENCY_VOLTAGE_UV EMERGENCY_SAMPLES MAX_TEMP_DECIC MAX_TEMP_SAMPLES SHUTDOWN_COMMAND DRY_RUN MAX_SAMPLES POWER_SUPPLY_ROOT; do
+	eval "_env_$_v=\${$_v-__unset__}"
+done
 INTERVAL_SECONDS=${INTERVAL_SECONDS:-5}
 SHUTDOWN_VOLTAGE_UV=${SHUTDOWN_VOLTAGE_UV:-3450000}
 SHUTDOWN_SAMPLES=${SHUTDOWN_SAMPLES:-12}
@@ -16,6 +20,10 @@ POWER_SUPPLY_ROOT=${POWER_SUPPLY_ROOT:-/sys/class/power_supply}
 
 [ -r /etc/phoenix-battery-safety.conf ] && . /etc/phoenix-battery-safety.conf
 [ -r /etc/default/phoenix-battery-safety ] && . /etc/default/phoenix-battery-safety
+for _v in INTERVAL_SECONDS SHUTDOWN_VOLTAGE_UV SHUTDOWN_SAMPLES EMERGENCY_VOLTAGE_UV EMERGENCY_SAMPLES MAX_TEMP_DECIC MAX_TEMP_SAMPLES SHUTDOWN_COMMAND DRY_RUN MAX_SAMPLES POWER_SUPPLY_ROOT; do
+	eval "_env_val=\${_env_$_v}"
+	if [ "$_env_val" != "__unset__" ]; then eval "$_v=\${_env_val}"; fi
+done
 
 valid_uint() {
 	case "$1" in
@@ -79,15 +87,58 @@ low_count=0
 emergency_count=0
 hot_count=0
 sample_count=0
+voltage_invalid_count=0
+current_invalid_count=0
+temp_invalid_count=0
+sensor_fail_logged=0
 
 while :; do
-	voltage_file="$gauge/voltage_avg"
-	[ -r "$voltage_file" ] || voltage_file="$gauge/voltage_now"
-	voltage_uv=$(read_value "$voltage_file")
+	voltage_now_uv=$(read_value "$gauge/voltage_now")
+	voltage_avg_uv=$(read_value "$gauge/voltage_avg")
 	current_ua=$(read_value "$gauge/current_now")
 	temp_decic=$(read_value "$gauge/temp")
 
-	if valid_uint "$voltage_uv" && valid_int "$current_ua" && valid_uint "$temp_decic"; then
+	# ---- Sensor validity + fault isolation counters ----
+	if valid_uint "$temp_decic"; then
+		temp_invalid_count=0
+	else
+		temp_invalid_count=$((temp_invalid_count + 1))
+	fi
+	if valid_int "$current_ua"; then
+		current_invalid_count=0
+	else
+		current_invalid_count=$((current_invalid_count + 1))
+	fi
+	if valid_uint "$voltage_now_uv" || valid_uint "$voltage_avg_uv"; then
+		voltage_invalid_count=0
+	else
+		voltage_invalid_count=$((voltage_invalid_count + 1))
+	fi
+
+	# Log prolonged sensor failure, and fail-safe to shutdown if voltage/current
+	# stay invalid while external power is absent (cannot prove safe).
+	if [ "$voltage_invalid_count" -ge 12 ] || [ "$current_invalid_count" -ge 12 ]; then
+		if [ "$sensor_fail_logged" -eq 0 ]; then
+			logger -p daemon.crit -t phoenix-battery-safety \
+				"sensor failure: voltage_invalid=${voltage_invalid_count} current_invalid=${current_invalid_count} temp_invalid=${temp_invalid_count}"
+			sensor_fail_logged=1
+		fi
+		if ! external_power_online && [ "$voltage_invalid_count" -ge 12 ] && [ "$current_invalid_count" -ge 12 ]; then
+			shutdown_now "battery sensors invalid for ${voltage_invalid_count} samples without external power; shutting down conservatively"
+		fi
+	elif [ "$temp_invalid_count" -ge 12 ] && [ "$sensor_fail_logged" -eq 0 ]; then
+		logger -p daemon.warning -t phoenix-battery-safety \
+			"temperature sensor invalid for ${temp_invalid_count} samples"
+		sensor_fail_logged=1
+	fi
+	if [ "$voltage_invalid_count" -lt 12 ] && [ "$current_invalid_count" -lt 12 ] && [ "$temp_invalid_count" -lt 12 ]; then
+		sensor_fail_logged=0
+	fi
+
+	# ---- Independent protection channels ----
+
+	# Thermal channel: uses temp only, isolated from voltage/current validity
+	if valid_uint "$temp_decic"; then
 			if [ "$temp_decic" -ge "$MAX_TEMP_DECIC" ]; then
 				hot_count=$((hot_count + 1))
 			else
@@ -96,25 +147,40 @@ while :; do
 			if [ "$hot_count" -ge "$MAX_TEMP_SAMPLES" ]; then
 				shutdown_now "battery temperature ${temp_decic} deci-C persisted for ${hot_count} samples; shutting down"
 			fi
+	fi
 
-			if [ "$current_ua" -lt 0 ] && [ "$voltage_uv" -le "$EMERGENCY_VOLTAGE_UV" ]; then
+	# Emergency channel: must use instantaneous voltage_now, not avg
+	if valid_uint "$voltage_now_uv" && valid_int "$current_ua"; then
+			if [ "$current_ua" -lt 0 ] && [ "$voltage_now_uv" -le "$EMERGENCY_VOLTAGE_UV" ]; then
 				emergency_count=$((emergency_count + 1))
 			else
 				emergency_count=0
 			fi
 			if [ "$emergency_count" -ge "$EMERGENCY_SAMPLES" ]; then
-				shutdown_now "battery voltage ${voltage_uv}uV is below emergency threshold while discharging; shutting down"
+				shutdown_now "battery voltage_now ${voltage_now_uv}uV is below emergency threshold while discharging; shutting down"
 			fi
+	else
+		# Do not carry over emergency state on invalid sample; require consecutive valid samples
+		emergency_count=0
+	fi
 
+	# Sustained low-voltage channel: uses voltage_avg (fallback to voltage_now if avg absent)
+	sustained_voltage_uv="$voltage_avg_uv"
+	if ! valid_uint "$sustained_voltage_uv"; then
+		sustained_voltage_uv="$voltage_now_uv"
+	fi
+	if valid_uint "$sustained_voltage_uv" && valid_int "$current_ua"; then
 			if ! external_power_online && [ "$current_ua" -lt 0 ] &&
-			   [ "$voltage_uv" -le "$SHUTDOWN_VOLTAGE_UV" ]; then
+			   [ "$sustained_voltage_uv" -le "$SHUTDOWN_VOLTAGE_UV" ]; then
 				low_count=$((low_count + 1))
 			else
 				low_count=0
 			fi
 			if [ "$low_count" -ge "$SHUTDOWN_SAMPLES" ]; then
-				shutdown_now "battery voltage ${voltage_uv}uV remained below shutdown threshold without external power; shutting down"
+				shutdown_now "battery voltage_avg ${sustained_voltage_uv}uV remained below shutdown threshold without external power; shutting down"
 			fi
+	else
+		low_count=0
 	fi
 
 	sample_count=$((sample_count + 1))

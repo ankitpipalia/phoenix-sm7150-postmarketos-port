@@ -37,19 +37,44 @@ write_header() {
     printf 'epoch_s\tiso8601\tuptime_s\tboot_id\tvoltage_level_pct\tbattery_voltage_uv\tbattery_voltage_avg_uv\tbattery_voltage_ocv_uv\tbattery_current_ua\tbattery_current_avg_ua\tbattery_temp_decic\tcharger_online\tcharger_status\tcharger_health\tcharger_usb_type\tusb_input_voltage_uv\tusb_input_current_ua\tusb_input_current_limit_ua\ttcpm_online\ttcpm_voltage_uv\ttcpm_current_max_ua\ttcpm_usb_type\ttypec_power_role\n'
 }
 
+SCHEMA_VERSION=2
 last_day=
 sample_count=0
 while :; do
     day=$(date -u +%F)
-    log="$LOG_DIR/telemetry-$day.tsv"
-
-    # Never append a new schema to an existing legacy file. Keep the old log
-    # intact and start a versioned file that the report tool will also read.
+    base_log="$LOG_DIR/telemetry-$day.tsv"
+    # Find correct versioned log for today's schema
+    expected_header=$(write_header)
+    log="$base_log"
     if [ -s "$log" ]; then
         IFS= read -r existing_header < "$log" || existing_header=
-        expected_header=$(write_header)
-        [ "$existing_header" = "$expected_header" ] || \
+        if [ "$existing_header" != "$expected_header" ]; then
+            # Legacy schema present — migrate to -v2
             log="$LOG_DIR/telemetry-$day-v2.tsv"
+            # If v2 already exists with wrong schema (future v3), bump again
+            if [ -s "$log" ]; then
+                IFS= read -r v2_header < "$log" || v2_header=
+                if [ "$v2_header" != "$expected_header" ]; then
+                    log="$LOG_DIR/telemetry-$day-v3.tsv"
+                    # Ensure v3 header validated or created fresh
+                    if [ -s "$log" ]; then
+                        IFS= read -r v3_header < "$log" || v3_header=
+                        [ "$v3_header" = "$expected_header" ] || : > "$log"
+                    fi
+                fi
+            fi
+        fi
+    fi
+    # If selected log exists but is empty/truncated, ensure header present
+    if [ ! -s "$log" ]; then
+        :
+    else
+        # Validate header matches before append
+        IFS= read -r cur_header < "$log" || cur_header=
+        if [ "$cur_header" != "$expected_header" ]; then
+            # Schema drift — find next version
+            log="$LOG_DIR/telemetry-$day-v3.tsv"
+        fi
     fi
 
     if [ "$day" != "$last_day" ]; then
@@ -60,10 +85,15 @@ while :; do
     fi
 
     tcpm=
+    # Prefer online TCPM source for deterministic telemetry
     for candidate in "$POWER_SUPPLY_ROOT"/tcpm-source-psy-*; do
         [ -d "$candidate" ] || continue
-        tcpm=$candidate
-        break
+        if [ "$(cat "$candidate/online" 2>/dev/null)" = "1" ]; then
+            tcpm=$candidate
+            break
+        fi
+        # keep first as fallback if none online
+        [ -z "$tcpm" ] && tcpm=$candidate
     done
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
