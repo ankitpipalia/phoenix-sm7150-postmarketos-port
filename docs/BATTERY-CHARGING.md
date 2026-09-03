@@ -92,6 +92,49 @@ This validates this specific hub/charger combination only. Direct SDP, CDP,
 DCP, 5 V Type-C, different PD supplies, cable collapse, disconnect/reconnect and
 thermal conditions still require separate testing.
 
+## Longer-term recheck: 2026-09-03
+
+The replacement battery and charger were rechecked after roughly two weeks.
+The logger contained 79,078 usable samples between August 20 and September 3,
+with an eight-day recording gap after the device powered down on August 23.
+
+Observed safety range:
+
+| Observation | Result |
+|---|---:|
+| Battery voltage | 2.532-4.130 V |
+| Samples above 4.2 V | 0 |
+| Samples above 4.4 V | 0 |
+| Battery temperature | 28.6-35.5 C |
+| Samples at or above 40 C | 0 |
+| Verified limiter failures | 0 |
+
+The upper-voltage and thermal results show no evidence of overcharging or
+overheating. At the recheck the charger reported `Good`, detected DCP and drew
+about 695 mA with AICL setting an effective 700 mA ceiling. Battery current was
+positive at about 95-103 mA and temperature was 33.3-33.4 C.
+
+Two limitations became clear over the longer sample:
+
+1. The voltage-derived SOC causes frequent limiter transitions. Journald held
+   402 verified pauses and 423 verified resumes. On September 2 and 3, typical
+   charging dwell was about 2.4 minutes and suspended dwell about 7.6-7.9
+   minutes. This is shallow cycling rather than overcharging, but a future
+   limiter should add minimum dwell/debounce logic instead of treating every
+   instantaneous voltage-derived percentage as stable SOC.
+2. On August 23 the external TCPM/charger source was offline. The device spent
+   about 81 minutes below 3.4 V and reached a reported 2.532 V before logging
+   stopped. This was a deep-discharge event while input power was unavailable,
+   not a charging-limit or over-voltage event. Unattended installations need an
+   orderly low-voltage shutdown policy in addition to the upper charge cap.
+
+The report totals spanning a reboot or RTC correction must also be treated as
+unreliable: the current integrator uses epoch time even though the telemetry
+already records monotonic uptime. Per-session capacity reporting should use
+positive uptime deltas and reject uptime resets. None of these observations is
+a measured battery SOH or full capacity; that still requires a controlled
+charge/discharge experiment.
+
 ## Charge limiter
 
 `phoenix-charge-cap.sh` implements 60-70% hysteresis by suspending the SMB USB
