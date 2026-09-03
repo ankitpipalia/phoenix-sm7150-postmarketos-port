@@ -57,6 +57,7 @@ update_source_block() {
 		while ((getline line < list_file) > 0) {
 			if (line != "")
 				order[++count] = line;
+			phoenix[line] = 1;
 		}
 		close(list_file);
 	}
@@ -66,8 +67,13 @@ update_source_block() {
 		gsub(/^[ \t]+|[ \t]+$/, "", line);
 		gsub(/^"/, "", line);
 		gsub(/"$/, "", line);
-		if (line ~ /\.patch$/)
-			next;
+		if (line ~ /\.patch$/) {
+			n = split(line, parts, /[ \t]+/);
+			fname = parts[n];
+			sub(/^.*\//, "", fname);
+			if (fname in phoenix)
+				next;
+		}
 	}
 	in_source && $0 == "\"" {
 		for (i = 1; i <= count; i++) {
@@ -120,8 +126,10 @@ update_sha512_entries() {
 		file_name = parts[length(parts)];
 		if (target[file_name])
 			next;
-		if (file_name ~ /\.patch$/)
-			next;
+		if (file_name ~ /\.patch$/) {
+			if (file_name in target)
+				next;
+		}
 	}
 	{ print }
 	' "$file" > "$tmp"
@@ -204,8 +212,16 @@ sum_lines_file="$(mktemp)"
 trap 'rm -f "$patch_list_file" "$sum_lines_file"' EXIT
 
 printf '%s\n' "${patch_names[@]}" > "$patch_list_file"
+# Build combined phoenix set for removal (previous + current) to avoid deleting unrelated upstream patches
+phoenix_all_file="$(mktemp)"
+if [[ -f "$phoenix_manifest" ]]; then
+	cat "$phoenix_manifest" > "$phoenix_all_file"
+fi
+printf '%s\n' "${patch_names[@]}" >> "$phoenix_all_file"
+# Deduplicate
+sort -u "$phoenix_all_file" -o "$phoenix_all_file"
 
-update_source_block "$kernel_apkbuild" "$patch_list_file"
+update_source_block "$kernel_apkbuild" "$phoenix_all_file"
 
 # The phoenix panel driver is introduced by 0001/0003 and must be enabled
 # explicitly in the package kernel config to avoid oldconfig prompts/defaults.
@@ -220,7 +236,23 @@ ensure_kernel_config_symbol "$kernel_config" "CONFIG_CHARGER_QCOM_SMB2" "m"
 config_sum="$(sha512sum "$kernel_config" | awk '{print $1}')"
 ordered_sum_lines=("$config_sum  $(basename "$kernel_config")" "${sum_lines[@]}")
 printf '%s\n' "${ordered_sum_lines[@]}" > "$sum_lines_file"
+# For sha512 removal, also use combined phoenix set plus current sums
+# Build a combined target list: current sums + previous manifest checksums (if any) - we need to map previous manifest names to checksums?
+# Simpler: still use current sums for ordering, but for removal use phoenix_all_file names
+# Update the awk to use phoenix_all_file for patch name check, but keep order from sum_lines_file
+# We will create a helper that merges previous manifest names into target for removal
+if [[ -f "$phoenix_manifest" ]]; then
+	while IFS= read -r prev; do
+		[[ -z "$prev" ]] && continue
+		case "$prev" in *\/*|.*) continue;; esac
+		# If prev not already in current sums, add a dummy entry for removal tracking
+		if ! grep -q "  $prev" "$sum_lines_file" 2>/dev/null; then
+			echo "dummy  $prev" >> "$phoenix_all_file"
+		fi
+	done < "$phoenix_manifest"
+fi
 update_sha512_entries "$kernel_apkbuild" "$sum_lines_file"
+rm -f "$phoenix_all_file"
 
 echo "Sync complete."
 echo "Device package:   $device_testing_dir/device-xiaomi-phoenix"

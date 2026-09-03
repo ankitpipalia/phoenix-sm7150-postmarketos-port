@@ -30,18 +30,16 @@ LOCK_FILE=/run/lock/phoenix-usb-role.lock
 
 [ -e /etc/phoenix-usb-host-wake.conf ] && . /etc/phoenix-usb-host-wake.conf
 
-mkdir -p "$(dirname "$LOCK_FILE")"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9 2>/dev/null; then
-	logger -t phoenix-usb-host-wake "USB role lock busy (typec-recover running), deferring"
-	exit 0
+if ! command -v flock >/dev/null 2>&1; then
+	logger -p daemon.err -t phoenix-usb-host-wake "flock not found, cannot safely toggle USB role"
+	exit 1
 fi
 
 # Bail cleanly if the role switch doesn't exist (different kernel / device).
 [ -w "$ROLE_FILE" ] || { logger -t phoenix-usb-host-wake "role file not writable, exiting"; exit 0; }
 
 # Phase 1: settle wait — give the kernel/NM a chance to bring eth0 up
-# without our intervention.
+# without our intervention. No lock held during passive wait.
 i=0
 while [ $i -lt $SETTLE_SEC ]; do
     if [ -e /sys/class/net/$IFNAME ]; then
@@ -52,11 +50,28 @@ while [ $i -lt $SETTLE_SEC ]; do
     i=$((i + 1))
 done
 
-# Phase 2: force a role switch round-trip
+# Phase 2: force a role switch round-trip - acquire lock only for mutation
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9 2>/dev/null; then
+	logger -t phoenix-usb-host-wake "USB role lock busy (typec-recover running), deferring"
+	exit 0
+fi
+# Re-check after acquiring lock (may have appeared while waiting)
+if [ -e /sys/class/net/$IFNAME ]; then
+	logger -t phoenix-usb-host-wake "$IFNAME appeared while waiting for lock — no toggle needed"
+	exit 0
+fi
 logger -t phoenix-usb-host-wake "$IFNAME missing after ${SETTLE_SEC}s, toggling usb_role_switch"
-echo device > "$ROLE_FILE" 2>/dev/null || true
+if ! echo device > "$ROLE_FILE" 2>/dev/null; then
+	logger -p daemon.err -t phoenix-usb-host-wake "failed to write device to $ROLE_FILE"
+	exit 1
+fi
 sleep 3
-echo host > "$ROLE_FILE" 2>/dev/null || true
+if ! echo host > "$ROLE_FILE" 2>/dev/null; then
+	logger -p daemon.err -t phoenix-usb-host-wake "failed to write host to $ROLE_FILE"
+	exit 1
+fi
 
 # Phase 3: wait for eth0 to re-appear (xHCI probe + hub enum + cdc_ether bind)
 i=0

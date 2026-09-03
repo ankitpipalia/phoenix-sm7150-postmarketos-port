@@ -34,12 +34,9 @@ typec="$TYPEC_ROOT/port0"
 
 [ -d "$TYPEC_ROOT/port0-partner" ] || exit 0
 
-# Acquire shared lock with usb-host-wake
-mkdir -p "$(dirname "$LOCK_FILE")"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9 2>/dev/null; then
-	logger -t phoenix-typec-recover "USB role lock busy, skipping"
-	exit 0
+if ! command -v flock >/dev/null 2>&1; then
+	logger -p daemon.err -t phoenix-typec-recover "flock not found, cannot safely recover Type-C role"
+	exit 1
 fi
 
 is_stuck_source() {
@@ -57,8 +54,9 @@ fi
 [ "$(cat "$charger/online" 2>/dev/null)" = "0" ] || exit 0
 [ "$(cat "$charger/status" 2>/dev/null)" = "Discharging" ] || exit 0
 
-# Check voltage/ capacity urgency. Prefer voltage if available.
+# Check voltage/ capacity urgency. Voltage primary, capacity only if voltage invalid.
 urgent=0
+voltage_uv=""
 if [ -r "$qg/voltage_avg" ] || [ -r "$qg/voltage_now" ]; then
 	voltage_file="$qg/voltage_avg"
 	[ -r "$voltage_file" ] || voltage_file="$qg/voltage_now"
@@ -66,21 +64,27 @@ if [ -r "$qg/voltage_avg" ] || [ -r "$qg/voltage_now" ]; then
 	case "$voltage_uv" in
 		''|*[!0-9]*) voltage_uv="" ;;
 	esac
-	if [ -n "$voltage_uv" ] && [ "$voltage_uv" -lt "$VOLTAGE_THRESHOLD_UV" ]; then
-		urgent=1
-	fi
-fi
-if [ "$urgent" -eq 0 ] && [ -r "$qg/capacity" ]; then
-	cap=$(cat "$qg/capacity" 2>/dev/null || echo 100)
-	case "$cap" in
-		''|*[!0-9]*) cap=100 ;;
-	esac
-	if [ "$cap" -lt "$CAP_THRESHOLD" ]; then
-		urgent=1
+	if [ -n "$voltage_uv" ]; then
+		if [ "$voltage_uv" -lt "$VOLTAGE_THRESHOLD_UV" ]; then
+			urgent=1
+		else
+			logger -t phoenix-typec-recover "stuck as source at ${voltage_uv}uV but above threshold ${VOLTAGE_THRESHOLD_UV}uV, deferring"
+			exit 0
+		fi
 	else
-		# Log warning outside threshold for visibility but don't act
-		logger -t phoenix-typec-recover "stuck as source at ${cap}%/${voltage_uv:-unknown}uV but above threshold (CAP $CAP_THRESHOLD / $VOLTAGE_THRESHOLD_UV uV), deferring"
-		exit 0
+		# Voltage invalid, fallback to capacity
+		if [ -r "$qg/capacity" ]; then
+			cap=$(cat "$qg/capacity" 2>/dev/null || echo 100)
+			case "$cap" in
+				''|*[!0-9]*) cap=100 ;;
+			esac
+			if [ "$cap" -lt "$CAP_THRESHOLD" ]; then
+				urgent=1
+			else
+				logger -t phoenix-typec-recover "stuck as source voltage invalid at ${cap}% but above threshold CAP $CAP_THRESHOLD, deferring"
+				exit 0
+			fi
+		fi
 	fi
 fi
 [ "$urgent" -eq 1 ] || exit 0
@@ -93,6 +97,17 @@ if [ "$PERSIST_SEC" -gt 0 ]; then
 	fi
 fi
 
+# Acquire lock only for role mutation, re-check stuck after lock
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9 2>/dev/null; then
+	logger -t phoenix-typec-recover "USB role lock busy, skipping"
+	exit 0
+fi
+if ! is_stuck_source; then
+	logger -t phoenix-typec-recover "stuck state cleared while waiting for lock"
+	exit 0
+fi
 # Attempt: swap to sink and observe.
 cap_disp=$(cat "$qg/capacity" 2>/dev/null || echo "?")
 voltage_disp=$(cat "$qg/voltage_avg" 2>/dev/null || cat "$qg/voltage_now" 2>/dev/null || echo "?")
@@ -108,12 +123,14 @@ case "$new_pr" in
 	*"[sink]"*) sink_ok=1 ;;
 	*) sink_ok=0 ;;
 esac
-if [ "$new_online" = "1" ] || [ "$new_status" = "Charging" ] || [ "$sink_ok" = "1" ]; then
-	if [ "$sink_ok" = "1" ]; then
-		logger -t phoenix-typec-recover "recovered to sink at ${cap_disp}%/${voltage_disp}uV (external power detected after manual swap, power_role $new_pr)"
-	else
-		logger -t phoenix-typec-recover "recovered to sink at ${cap_disp}%/${voltage_disp}uV (charger online $new_online status $new_status, power_role $new_pr)"
-	fi
+# Also check TCPM online
+tcpm_online=0
+for _tcpm in "$POWER_SUPPLY_ROOT"/tcpm-source-psy-*; do
+	[ -d "$_tcpm" ] || continue
+	if [ "$(cat "$_tcpm/online" 2>/dev/null)" = "1" ]; then tcpm_online=1; break; fi
+done
+if [ "$sink_ok" = "1" ] && { [ "$new_online" = "1" ] || [ "$new_status" = "Charging" ] || [ "$tcpm_online" = "1" ]; }; then
+	logger -t phoenix-typec-recover "recovered to sink at ${cap_disp}%/${voltage_disp}uV (external power detected after manual swap, power_role $new_pr)"
 	exit 0
 fi
 

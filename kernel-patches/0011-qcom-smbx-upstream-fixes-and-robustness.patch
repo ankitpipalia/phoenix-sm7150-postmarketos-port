@@ -8,7 +8,11 @@ selector off-by-one, downgrade-safe ICL ordering, log spam, and make
 TCPM fallback revalidation robust against transient errors (common
 exit with periodic reschedule even after early returns).
 
-These are the 5-patch Fixes prerequisite plus the robustness improvements
+Carries selected fixes from the 5-patch Fixes prerequisite (watchdog base,
+OV recovery, float selector) plus Phoenix robustness changes. The remaining
+upstream prerequisite fixes (health bits, float validation/rollback, HVDCP,
+recharge policy, etc.) and the full SMB5 v4 are intentionally pending the
+full v4 backport
 identified in the P0/P1 review.
 
 Signed-off-by: Phoenix Port <phoenix@example.com>

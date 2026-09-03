@@ -98,7 +98,7 @@ PM6150 QGauge -> voltage/current/temperature and temporary voltage-derived level
 
 ## Live device snapshot
 
-Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-tested 2026-09-05 00:30 UTC for P0/P1 fixes):
+Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-tested 2026-09-05 23:33 UTC for P0/P1 fixes, corrected `source [sink]` = SINK per sysfs ABI):
 
 | Item | Observation (2026-09-03 23:07 UTC re-audit) | Prior observation |
 | --- | --- | --- |
@@ -111,7 +111,7 @@ Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-t
 | Battery | `capacity 75-76%` (`76% 4138371uV 53710uA` at 23:07:48, `75% 4149271uV` avg `4157640uV`), `charging` with `charge_full=0 charge_full_design=4500000` | 62%, about 4.03 V, about -50 mA |
 | Charger | `pm8150b-charger online=1 status=Charging health=Good current_max=700000 current_now=694525 voltage_now=4492720` (2026-09-03 23:07) | — |
 | TCPM | `tcpm-source-psy-c440000.spmi:pmic@0:typec@1500 online=1 voltage_now=5000000 current_max=3000000 usb_type=[C] PD PD_PPS ...` (2026-09-03 23:07) | — |
-| Type-C | `port0 power_role=source [sink] data_role=host power_operation_mode=3.0A vconn=no` (both 23:07 and Aug 23 source); at 23:07 `charger online=1 Charging` (previously offline with `current -50mA`); partner present (`port0-partner/` exists) | local port acting as a 5 V/3 A source; SMB charger offline |
+| Type-C | `port0 power_role=source [sink]` `data_role=host` `power_operation_mode=3.0A` `vconn=no` — **current role is shown in brackets, so `source [sink]` means SINK** (per `Documentation/ABI/testing/sysfs-class-typec`); at 2026-09-03 23:07 `charger online=1 Charging` `current +53mA` (valid sink with powered dock: power sink + data host, as verified in upstream SMB5 v4 `powered dock: data host + power sink`); earlier Aug 23 `source [sink]` reading, if literal, also means sink — not sourcing — so "stuck as source" is *not* supported by that `power_role` reading (deep discharge still genuine due to `charger/TCPM offline`); partner present (`port0-partner/` exists) | local port acting as a 5 V/3 A source; SMB charger offline |
 | Device package | `device-xiaomi-phoenix-1-r22` aarch64 (installed `2026-09-05 23:33` via `apk add --allow-untrusted`; `20-phoenix-optional.preset` present, `Restart=always` safety) | `device-xiaomi-phoenix-1-r20` (locally built) |
 | Repository package | `device-xiaomi-phoenix-1-r22` (`pkgrel=22` in `APKBUILD:6`, `20-phoenix-optional.preset` + safety `Restart=always` + charge-cap hysteresis + report `ls -1t`/power) | `device-xiaomi-phoenix-1-r20` |
 | Containers | `phoenix-monitor Up 11 days`, `cloudflared Up ~1h` | Docker monitor and Cloudflare tunnel running |
@@ -563,11 +563,10 @@ claiming the live server image has them operational. Verify each after kernel 00
 ### 17. Type-C/hub power state needs operational monitoring
 
 At inspection the TCPM source supply was online at 5 V/3 A while the SMB charger
-was offline and battery current was negative. The phone was powering the hub,
-not receiving charger power. The existing rescue service does not intervene
-until the voltage-derived level falls below its configured 30 threshold.
+was offline and battery current was negative. The phone was in `power_role=source [sink]` **which actually reports SINK** (brackets show current role per `sysfs-class-typec`), so the earlier "sourcing" interpretation was mistaken — re-evaluate raw `power_role` with bracketed value. With `charger online=0` + `TCPM offline` + negative current, the deep discharge is still genuine, but `power_role` alone does not prove sourcing. The existing rescue service (correctly parsing `*"[source]"*`) does not intervene
+until the voltage-derived level falls below its configured threshold.
 
-**Live 2026-09-03 23:07:** `/sys/class/typec/port0/power_role=source [sink]` `data_role=host` with `charger online=1 status=Charging` `tcpm online=1 voltage 5V current 3A` `qcom_qg current +53710uA..+137939uA`. Earlier (Aug 23) `charger offline` with `source [sink]` and negative current was the problematic sourcing state; now charger is online and battery is gaining (`phoenix-battery-report v2 0.49h +64mAh`), indicating the hub path is currently sinking. `phoenix-typec-recover.sh` `CAP_THRESHOLD=30` still gates rescue (`expired` until `<30%`), `timer enabled` and `partner present`.
+**Live 2026-09-03 23:07:** `/sys/class/typec/port0/power_role=source [sink]` `data_role=host` — **means SINK** (brackets = current role); with `charger online=1 status=Charging` `tcpm online=1 voltage 5V current 3A` `qcom_qg current +53710uA..+137939uA` this is *valid* powered-dock state: `power sink + data host` (as in upstream SMB5 v4 tested `powered dock: data host + power sink`). Earlier (Aug 23) `charger offline` with `source [sink]` + negative current, if `power_role` was also `source [sink]`, was **not** sourcing — deep discharge was still real due to `TCPM/charger offline`, but `power_role` does not support "stuck as source" for that timestamp (reclassify). `phoenix-typec-recover.sh` (correctly checking `*"[source]"*`) now uses voltage `3600000uV` primary (capacity only if voltage invalid) and is `timer enabled` with `partner present`; now charger is online and battery is gaining (`phoenix-battery-report v2 0.49h +64mAh`), indicating the hub path is currently sinking.
 
 #### Implemented fix / still required
 

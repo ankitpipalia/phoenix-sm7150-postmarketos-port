@@ -56,29 +56,51 @@ while :; do
                 IFS= read -r v2_header < "$log" || v2_header=
                 if [ "$v2_header" != "$expected_header" ]; then
                     log="$LOG_DIR/telemetry-$day-v3.tsv"
-                    # Ensure v3 header validated or created fresh
+                    # Never truncate existing v3; if header mismatched, use v4
                     if [ -s "$log" ]; then
                         IFS= read -r v3_header < "$log" || v3_header=
-                        [ "$v3_header" = "$expected_header" ] || : > "$log"
+                        if [ "$v3_header" != "$expected_header" ]; then
+                            log="$LOG_DIR/telemetry-$day-v4.tsv"
+                        fi
                     fi
                 fi
             fi
         fi
     fi
-    # If selected log exists but is empty/truncated, ensure header present
-    if [ ! -s "$log" ]; then
-        :
-    else
-        # Validate header matches before append
+    # Validate selected log before append - never truncate, just find next version
+    if [ -s "$log" ]; then
         IFS= read -r cur_header < "$log" || cur_header=
         if [ "$cur_header" != "$expected_header" ]; then
-            # Schema drift — find next version
-            log="$LOG_DIR/telemetry-$day-v3.tsv"
+            # Selected log has wrong schema, try next version (v3/v4)
+            if [ "$log" = "$base_log" ]; then
+                log="$LOG_DIR/telemetry-$day-v2.tsv"
+            elif [ "$log" = "$LOG_DIR/telemetry-$day-v2.tsv" ]; then
+                log="$LOG_DIR/telemetry-$day-v3.tsv"
+            else
+                log="$LOG_DIR/telemetry-$day-v4.tsv"
+            fi
+            # If new candidate also mismatched, keep bumping (up to v4)
+            if [ -s "$log" ]; then
+                IFS= read -r cur2 < "$log" || cur2=
+                if [ "$cur2" != "$expected_header" ]; then
+                    log="$LOG_DIR/telemetry-$day-v4.tsv"
+                fi
+            fi
+        fi
+    fi
+    # Ensure header exists before append, regardless of last_day (append-safe)
+    if [ ! -s "$log" ]; then
+        write_header > "$log"
+    else
+        IFS= read -r chk < "$log" || chk=
+        if [ "$chk" != "$expected_header" ]; then
+            # Header still mismatched after version bump - start fresh v4
+            log="$LOG_DIR/telemetry-$day-v4.tsv"
+            [ -s "$log" ] || write_header > "$log"
         fi
     fi
 
     if [ "$day" != "$last_day" ]; then
-        [ -s "$log" ] || write_header > "$log"
         find "$LOG_DIR" -type f -name 'telemetry-*.tsv' \
             -mtime "+$RETENTION_DAYS" -exec rm -f '{}' ';' 2>/dev/null || true
         last_day=$day

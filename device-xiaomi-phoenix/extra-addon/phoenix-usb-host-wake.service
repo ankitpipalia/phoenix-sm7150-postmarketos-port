@@ -2,7 +2,6 @@
 Description=Phoenix USB host wake (toggle usb_role_switch if eth0 missing at boot)
 After=multi-user.target NetworkManager.service
 Wants=NetworkManager.service
-ConditionPathExists=/sys/class/usb_role/a600000.usb-role-switch/role
 
 [Service]
 Type=oneshot

@@ -35,6 +35,22 @@ behaviour_is() {
 	esac
 }
 
+# Reset helper for disabling timer while owning inhibit
+if [ "${1:-}" = "reset" ]; then
+	if [ -e "$state" ]; then
+		printf '%s\n' auto > "$behaviour" 2>/dev/null || true
+		rm -f "$state"
+		logger -t phoenix-charge-cap "reset: restored auto and cleared ownership state"
+	else
+		# Even without state file, ensure auto if currently inhibited by us (check state file only)
+		if behaviour_is inhibit-charge; then
+			printf '%s\n' auto > "$behaviour" 2>/dev/null || true
+			logger -t phoenix-charge-cap "reset: restored auto (no state file but was inhibited)"
+		fi
+	fi
+	exit 0
+fi
+
 if ! valid_uint "$START_VOLTAGE_UV" || ! valid_uint "$STOP_VOLTAGE_UV" ||
    [ "$START_VOLTAGE_UV" -ge "$STOP_VOLTAGE_UV" ]; then
 	logger -p daemon.err -t phoenix-charge-cap \
@@ -58,6 +74,20 @@ charger="$POWER_SUPPLY_ROOT/pm8150b-charger"
 gauge="$POWER_SUPPLY_ROOT/qcom_qg"
 behaviour="$charger/charge_behaviour"
 state="$RUN_DIR/phoenix-charge-cap.inhibited"
+
+# If external power is absent, nothing to inhibit
+if [ "$(cat "$charger/online" 2>/dev/null || echo 0)" != "1" ]; then
+	# Check TCPM as well
+	tcpm_online=0
+	for _tcpm in "$POWER_SUPPLY_ROOT"/tcpm-source-psy-*; do
+		[ -d "$_tcpm" ] || continue
+		if [ "$(cat "$_tcpm/online" 2>/dev/null)" = "1" ]; then tcpm_online=1; break; fi
+	done
+	if [ "$tcpm_online" != "1" ]; then
+		logger -p daemon.info -t phoenix-charge-cap "external power offline, no-op"
+		exit 0
+	fi
+fi
 
 [ -r "$gauge/voltage_now" ] || exit 0
 [ -w "$behaviour" ] || {

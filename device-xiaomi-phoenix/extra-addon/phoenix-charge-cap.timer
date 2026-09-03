@@ -1,6 +1,5 @@
 [Unit]
 Description=Run Phoenix voltage-based charge limiter every minute
-ConditionPathExists=/sys/class/power_supply/pm8150b-charger/charge_behaviour
 
 [Timer]
 OnBootSec=30s
