@@ -6,6 +6,7 @@ rm -f /etc/systemd/system/ModemManager.service.requires/msm-modem-uim-selection.
 
 mkdir -p /etc/systemd/system
 ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
+ln -sf /dev/null /etc/systemd/system/qbootctl.service
 
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload >/dev/null 2>&1 || true

@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=19
+pkgrel=21
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -21,7 +21,6 @@ depends="
 	polkit-elogind
 	postmarketos-base
 	soc-qcom
-	soc-qcom-qbootctl
 	systemd-boot
 	unl0kr-fbforcerefresh
 "
@@ -33,6 +32,7 @@ install="
 source="
 	00-phoenix-notification-policy
 	00-phoenix-notification-policy.lock
+	20-phoenix-optional.preset
 	52_phoenix_eth_trust.nft
 	90-phoenix-mac.conf
 	90-phoenix-wlan-mac.preset
@@ -42,17 +42,18 @@ source="
 	phoenix-wlan-mac.sh
 	$pkgname.post-install
 	$pkgname.post-upgrade
-	doas-user-nopass.conf
 	deviceinfo
 	hexagonrpcd.confd
 	modules-initfs
-	sudoers-user-nopass.conf
 
 	extra-addon/phoenix-charge-cap.conf
 	extra-addon/phoenix-charge-cap.service
 	extra-addon/phoenix-charge-cap.sh
 	extra-addon/phoenix-charge-cap.timer
 	extra-addon/phoenix-battery-report.sh
+	extra-addon/phoenix-battery-safety.conf
+	extra-addon/phoenix-battery-safety.service
+	extra-addon/phoenix-battery-safety.sh
 	extra-addon/phoenix-battery-telemetry.conf
 	extra-addon/phoenix-battery-telemetry.service
 	extra-addon/phoenix-battery-telemetry.sh
@@ -105,6 +106,8 @@ package() {
 		"$pkgdir"/usr/lib/systemd/system/phoenix-wlan-mac.service
 	install -Dm644 "$srcdir"/90-phoenix-wlan-mac.preset \
 		"$pkgdir"/usr/lib/systemd/system-preset/90-phoenix-wlan-mac.preset
+	install -Dm644 "$srcdir"/20-phoenix-optional.preset \
+		"$pkgdir"/usr/lib/systemd/system-preset/20-phoenix-optional.preset
 
 	# Phoenix's ADSP firmware's sensor_process PD fails SNS_REG_INIT every
 	# ~4s, and the default qcom_q6v5_pas recovery=enabled policy restarts the
@@ -118,7 +121,8 @@ package() {
 	# These ship installed but DISABLED. Opt in per machine with
 	# `systemctl enable --now <unit>`. See extra-addon/README.md for context.
 
-	# Charge limiter. Pauses charging at 70%, resumes at 60% (hysteresis).
+	# Voltage-based charge limiter. Inhibits battery charging at 4.10 V and
+	# resumes at 4.00 V while keeping USB input online.
 	# Enable: `systemctl enable --now phoenix-charge-cap.timer`
 	# Tune:   /etc/phoenix-charge-cap.conf
 	install -Dm755 "$srcdir"/phoenix-charge-cap.sh \
@@ -140,6 +144,15 @@ package() {
 		"$pkgdir"/usr/lib/systemd/system/phoenix-battery-telemetry.service
 	install -Dm644 "$srcdir"/phoenix-battery-telemetry.conf \
 		"$pkgdir"/etc/phoenix-battery-telemetry.conf
+
+	# Independent low-voltage/temperature shutdown guard for unattended use.
+	# Enable after validating thresholds on the installed replacement battery.
+	install -Dm755 "$srcdir"/phoenix-battery-safety.sh \
+		"$pkgdir"/usr/libexec/phoenix-battery-safety.sh
+	install -Dm644 "$srcdir"/phoenix-battery-safety.service \
+		"$pkgdir"/usr/lib/systemd/system/phoenix-battery-safety.service
+	install -Dm644 "$srcdir"/phoenix-battery-safety.conf \
+		"$pkgdir"/etc/phoenix-battery-safety.conf
 
 	# Panel blanker for headless / multi-user.target installs.
 	# Enable: `systemctl enable --now phoenix-screen-off.service`
@@ -170,13 +183,6 @@ package() {
 		"$pkgdir"/usr/lib/systemd/system/phoenix-usb-host-wake.service
 	# ------------------------------------------------------------------------
 
-	# Passwordless root access for default postmarketOS user over doas/sudo.
-	# This mirrors the live fix and makes it persistent across fresh flashes.
-	install -Dm600 "$srcdir"/doas-user-nopass.conf \
-		"$pkgdir"/etc/doas.d/99-user-nopass.conf
-	install -Dm440 "$srcdir"/sudoers-user-nopass.conf \
-		"$pkgdir"/etc/sudoers.d/90-user-nopass
-
 	# Enable NetworkManager at boot (required for WiFi/Ethernet in phosh)
 	mkdir -p "$pkgdir"/etc/runlevels/default
 	ln -sf /etc/init.d/networkmanager \
@@ -202,19 +208,30 @@ nonfree_firmware() {
 sha512sums="
 abdce4edc62396ce7feb869e8a51be31895b176d8a680532d0e8e481b63116c4316b6452c122e70f89115014fa84178603b15f97e336839a49653e441dde7f7a  00-phoenix-notification-policy
 4ec412372522e996ae83d61e3bce130a44c0c26f33ee6456178f82b2e2ee2bd9fa699ae51ab0be9970403f558b8ab9b378a2a81978a7bca7014df12fb3dcf662  00-phoenix-notification-policy.lock
-d015b7e28df2213692f18a7ad358310a4df5b5db23356ad864cd07c9990b8080c9883821029a8a9d0c9024add6d29b99b638081edc63d7e8aa74a3b6c107a61e  52_phoenix_eth_trust.nft
+e5ff20d16a0925e5033780f44e154663ba713d134f8d98740920fff096e46d94b7e18cfb85cf6b7a221b59e29c1d5a78dca8610a3babbe30070e7169692c8712  20-phoenix-optional.preset
+d1506befc564e12f7a8128e3ecfed456cb0be91c1ceca6aa5fd43bf65cd54e422a41a9289f83b4b8907fbf324addd505ef072acf7ad542ad5214d77d1c7b0358  52_phoenix_eth_trust.nft
 1699fb946b5cd237056fc9be47c3d1917c8fe8dfdf7884d665dea8e24cf45983fe9c781480617a3c8411b83d702c7eb849fb69bdfe2b3eec04a21ef04d3ce47a  90-phoenix-mac.conf
 faba3f40aa7a9a936bfe6aa5b422de6d38f2694a38e42fa30a6168ed7f2747202483df4ad2bf6e8f9a264336a95e95ab62a410fcf027e3c174ead7ec613c28e0  90-phoenix-wlan-mac.preset
 fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced29d482d0579313dd16df8a91030c7f6e0374e4025e715af0  adsp-disable-recovery.service
 24aa78ee30672628df4cf8acb48dac3411a8baa4ab0e32d5dc308adecbd82bbe3012e024b4b20c9f6f569817f588f33040d5969ad7a09e3ab69991d0262199df  dconf-profile-user
-bfbd3ed3ae2a19843e4fad3be0d42d2d124dead2e86e50e65b6ff607651e531cd21bc3d44678a4e7bc7e7fc9eb18badebc4c48d2bfa66a768a1b4d2de31924f6  phoenix-battery-report.sh
+50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
+d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
+cd1542e51f5c6aeaa815c26a2b57ae23e849adae02d194accb8d499519768c00f625438c850b18a31d14dc7c45cfe751c0997cc95fed37092526c11a7160d605  device-xiaomi-phoenix.post-install
+f7bf95e3cd736df27ae8cf308fdb2bcab3d3efe0fb68ca56f30fecf444e35eb9c5882b59ee4459ca850c3f873764a7ee3b2140985ab5695b6e2a2de91f152ee1  device-xiaomi-phoenix.post-upgrade
+038da30192c12a9d0aad77c64ce7662b5596efe336296cec5083a23f35257f767d91d41267eab33f415342da049c18dc7200625a2a8f3577020cdb06bd2f7037  deviceinfo
+0b94aae89479b0d684b1a0e6c498763afa623f11a89ebe96bda2db1ead36c71a3a93a25131eca8bbc51341fe3ff261c7101960e814d9c05cd553287387e6dee0  hexagonrpcd.confd
+f0304347e4b8018b1d3731df4daa2da91b2e3b76ca39e107b3ed2efaaccfa924445868aaf026de14c6808cc56959a486c2062ca2efa5b6f5f2ccbdc9c4919113  modules-initfs
+48198066f9b12b75db277d48f6e90f23df924d6ddc5aca9515d8434222918fba856f8cac0588ee6758e67cc9e2d96a293b207efff5a2ba67544f4e96bb43b769  phoenix-charge-cap.conf
+ae3d6deb42069e513f81812c6ef25d8731b8c54042347b306c25c79608ae31e89557ebdb6b7a9bb3e36fe554077a2ae2409c2c96d457aef2dad3ef0a68fa5c2c  phoenix-charge-cap.service
+17bb3bb0dfa6d3420b9fe691a30b33f54c9873704a2fa2a41b8019afc21858896073f185bacbc65222232386b5c720dfa789558a11f84a15c79328bb5e9ba09d  phoenix-charge-cap.sh
+68aff1cb309ce0d55a38885542ccb89917221d7cf291dd81177de97c214fa0a842ce123005b43bca15f022ed91ee1f9f271c76de9a8e1bfc6b1c987215969881  phoenix-charge-cap.timer
+53ba4c840ca36b106ada86e47e85159b6914cb24a817fa89222a4daa14dc7b4d63b57575c931dd6a4b221d36087897db88ea9cb0dbe23bf23c00f1a4a0c94d46  phoenix-battery-report.sh
+4a05fe621295d5c8d5c0ccbe66c0f8bcd10fc0e8fba19ff7ee0ae7c99a2e393eed890e28bb43b16a2a679e9d2ced8de5d95d4c05a2679274bf19d3b3c54e603d  phoenix-battery-safety.conf
+597e063424ae26dc94db0cc8b34b55403ba4c4e8bd8ae85fa0f56ebfbfe301a84301141d3279f5691389881279b44ad02a0ad4c65fa9b16ebda4e3b92fa75aa1  phoenix-battery-safety.service
+b0b6227fcf6a4464b1554f0bbe05ab33b7e0d2e2d4a19a3c018e4b88f780c66fbc8c231a6ef8096592897320ef8529dbca962167967a5cc047d6de609a786464  phoenix-battery-safety.sh
 343832bc79e0e10f21aa14197e4d2627fc773f46e79fd55043d9d691b75024bc208a09a461fdfd3cfcccc9927ead43be57d1df1f37f6d377168045e6a352d125  phoenix-battery-telemetry.conf
 2b1952d794fc848591873b03d58388093dffac8ef0c6ed255c812b2d150c7bfa403b6728429f8ab3d8321545cac66ce4b1c9db9c7c570086f2cfdb9e60ee6c68  phoenix-battery-telemetry.service
-5dde74ba565dadede7ae6b9a6099ddd9f7e1266cbc445dec8abfb9c6449ae9fc6353e67279803188689310b4fa79eb641c4cae6d53ca464a5f5bfb97378995fe  phoenix-battery-telemetry.sh
-05507cbed39c233ca7b78883ac2fc54a37fdefb00bbd7269fb482351b4e18790d2a36287d2692941c45d4e287bf33f601ce756ff27b1a7bbe0ec65f07a71d824  phoenix-charge-cap.conf
-8269c86cdd975cfb3338b2ce924fbe8a5844f50047610e534c9e0c875dec7ab3213baa9b80eaa30d96dc23f98e240eaacc5eebf0e2f183efaae61d45290e6a32  phoenix-charge-cap.service
-d0a1eb7fba0a684eac99f3decc992d84d37a66dc310c9e09c764d02b6ae173d170d1095485da40769319528fd0875f014396b8a4532606696e60f19c2ba1876e  phoenix-charge-cap.sh
-e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1faa36fd39aa2a5d90a19add355da33168da75ed1c2621fcd24  phoenix-charge-cap.timer
+9b2edf1965677394dd01b633ba95bcf2707f3a631b60ee427f6d231a506c51231bc37dcca65fe30fd505cd1aa99ac6c2f5e6fa5389892c008fe9d1ab7120d377  phoenix-battery-telemetry.sh
 71126ec16323ef86217561bb992ea0ae17e54327aa68c043f5c7dd6158640b234ad4d7a2dfdf45ff83968128587f0c7158e46b4438e22cfed46bf9271fd3969b  phoenix-screen-off.service
 620ea416f372ed224e41407e667db33a2e693b63f5f258d15be8b660069ce010ff6121643d44f8ec7f37a0d531f2ae48ab1d72093dd5d798e401442d3b8f10ec  phoenix-typec-recover.conf
 7b1f1e9c2470888f83d7b668a8e405efc9d91bdc0ecd6da80fef1a754856f23054bcfee4f81f600860e9ef546ecbc0fffd49f3dd23c3c95db0a9e3d04ade7d95  phoenix-typec-recover.service
@@ -222,13 +239,4 @@ e93559017634e7efd34987827636789466920a9bb78635de699dfedf3d635f1a0ac90ea7aef6b1fa
 782b0862643f2dae4a69eaf15b6577809702184795b47e4aaa48b140d2e01978231b6a7c4509ed986877378e1d58810ab7ec7e98e9a6de37bdecd3cbaf24daa4  phoenix-typec-recover.timer
 c6de9c9994be065fab7bf8bc080c37a5accbc69fa976ea73b1f7ffcdb9601696c910ec45e32fc0c869096f3a1521c60d80e4b48903c7006e26d6ed34ab5a7816  phoenix-usb-host-wake.service
 4a20f3ff065de2746d4505ef7695f8265c031d8719fc26454b5f5ac4047663f6f66f7f02d7b41d9fe95caa845b6084200a1de5a296edcb4e6f5ffe26260f9912  phoenix-usb-host-wake.sh
-50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
-d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
-b201b7d25d30afa4d8dc608d2eb052379b41a34e6d8eb12033dcaa4198aec1c855460ec30ef4a875da79651eb688a081af545d9ce992b543c379c040f4cd9ba3  device-xiaomi-phoenix.post-install
-3a25093756b03ae1976a612a569efd52e0173ddb3cd487c953f5a82649cf2050dcb2fea72074b4bf1485b8f89da25cabdd379cd2adf63d3dd68bf9303656cb67  device-xiaomi-phoenix.post-upgrade
-15a5fc589e54cf313998518042dc32a976b7b6c690aa82639a7ddc500d45659b6df39b6e117b338481a8e7aa2e6d706c90428c90073ba727d00ad6e0e0fcd501  doas-user-nopass.conf
-038da30192c12a9d0aad77c64ce7662b5596efe336296cec5083a23f35257f767d91d41267eab33f415342da049c18dc7200625a2a8f3577020cdb06bd2f7037  deviceinfo
-0b94aae89479b0d684b1a0e6c498763afa623f11a89ebe96bda2db1ead36c71a3a93a25131eca8bbc51341fe3ff261c7101960e814d9c05cd553287387e6dee0  hexagonrpcd.confd
-f0304347e4b8018b1d3731df4daa2da91b2e3b76ca39e107b3ed2efaaccfa924445868aaf026de14c6808cc56959a486c2062ca2efa5b6f5f2ccbdc9c4919113  modules-initfs
-bd753c03b65b432b03d55b28f96fe501e94f3ee22a1e79987473dee98fd5a2aa617475beacf5a15240367e40ecd66c7ff88564a674eca55e1a9e91684feeaa4c  sudoers-user-nopass.conf
 "

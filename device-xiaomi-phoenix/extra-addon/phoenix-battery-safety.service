@@ -1,0 +1,13 @@
+[Unit]
+Description=Phoenix low-voltage and battery-temperature shutdown guard
+After=local-fs.target
+ConditionPathExists=/sys/class/power_supply/qcom_qg/voltage_now
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/phoenix-battery-safety.sh
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

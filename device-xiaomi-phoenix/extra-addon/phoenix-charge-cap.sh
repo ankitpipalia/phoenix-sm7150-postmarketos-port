@@ -1,109 +1,94 @@
 #!/bin/sh
-# phoenix-charge-cap: hysteresis-based charge limiter for 24/7 server use.
+# Voltage-based charge limiter for Phoenix server deployments.
 #
-# Pauses charging (USBIN_SUSPEND_BIT) when battery reaches STOP threshold,
-# resumes when it falls below START threshold. Run periodically by a
-# systemd timer; idempotent and cheap.
-#
-# Plugged-in detection uses the Type-C source psy's `online`, not the SMB
-# charger's `online`. Writing USBIN_SUSPEND_BIT (via status=Unknown) flips
-# the charger's online flag to 0, so checking charger.online would
-# self-lock the cap in "paused" state forever once it triggered.
-#
-# Config file: /etc/phoenix-charge-cap.conf  (optional)
-#   STOP=70
-#   START=60
+# This requires qcom_smbx charge_behaviour support. Unlike the legacy STATUS
+# setter, inhibit-charge disables battery charging without suspending USBIN, so
+# the adapter continues to power the system.
 set -eu
 
-STOP=70
-START=60
+START_VOLTAGE_UV=${START_VOLTAGE_UV:-4000000}
+STOP_VOLTAGE_UV=${STOP_VOLTAGE_UV:-4100000}
+POWER_SUPPLY_ROOT=${POWER_SUPPLY_ROOT:-/sys/class/power_supply}
+RUN_DIR=${RUN_DIR:-/run}
+
 [ -r /etc/phoenix-charge-cap.conf ] && . /etc/phoenix-charge-cap.conf
 [ -r /etc/default/phoenix-charge-cap ] && . /etc/default/phoenix-charge-cap
 
-case "$STOP:$START" in
-    *[!0-9:]*|:*|*:) logger -p daemon.err -t phoenix-charge-cap "invalid STOP/START configuration"; exit 1 ;;
-esac
-if [ "$STOP" -gt 100 ] || [ "$START" -gt "$STOP" ]; then
-    logger -p daemon.err -t phoenix-charge-cap \
-        "invalid thresholds: require 0 <= START <= STOP <= 100"
-    exit 1
+valid_uint() {
+	case "$1" in
+		''|*[!0-9]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+behaviour_is() {
+	case "$current_behaviour" in
+		"$1"|*"[$1]"*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+if ! valid_uint "$START_VOLTAGE_UV" || ! valid_uint "$STOP_VOLTAGE_UV" ||
+   [ "$START_VOLTAGE_UV" -gt "$STOP_VOLTAGE_UV" ]; then
+	logger -p daemon.err -t phoenix-charge-cap \
+		"invalid voltage thresholds: require START_VOLTAGE_UV <= STOP_VOLTAGE_UV"
+	exit 1
 fi
 
-charger=/sys/class/power_supply/pm8150b-charger
-gauge=/sys/class/power_supply/qcom_qg
-state=/run/phoenix-charge-cap.paused
+charger="$POWER_SUPPLY_ROOT/pm8150b-charger"
+gauge="$POWER_SUPPLY_ROOT/qcom_qg"
+behaviour="$charger/charge_behaviour"
+state="$RUN_DIR/phoenix-charge-cap.inhibited"
 
-[ -e "$charger/status" ] || exit 0
-[ -e "$gauge/capacity" ] || exit 0
+[ -r "$gauge/voltage_now" ] || exit 0
+[ -w "$behaviour" ] || {
+	logger -p daemon.err -t phoenix-charge-cap \
+		"charge_behaviour is unavailable; refusing to suspend USB input"
+	exit 1
+}
 
-cap=$(cat "$gauge/capacity" 2>/dev/null || echo "")
-status=$(cat "$charger/status" 2>/dev/null || echo Unknown)
+voltage_file="$gauge/voltage_avg"
+[ -r "$voltage_file" ] || voltage_file="$gauge/voltage_now"
+voltage_uv=$(cat "$voltage_file" 2>/dev/null || true)
+valid_uint "$voltage_uv" || exit 0
 
-case "$cap" in
-  ''|*[!0-9]*) exit 0 ;;
-esac
+current_behaviour=$(cat "$behaviour" 2>/dev/null || echo unknown)
 
-# A USB-PD source is connected iff the typec source psy reports online=1.
-# Fall back to "any tcpm-source-psy with online=1" so we don't hard-code
-# the c440000.spmi:pmic@0:typec@1500 path.
-plugged=0
-for f in /sys/class/power_supply/tcpm-source-psy-*/online; do
-    [ -r "$f" ] || continue
-    [ "$(cat "$f")" = "1" ] && { plugged=1; break; }
-done
-# Belt-and-braces: if any IIO ADC reports VBUS above 4 V, treat as plugged.
-if [ "$plugged" = "0" ]; then
-    for f in /sys/bus/iio/devices/iio:device*/in_voltage_usb_in_v_div_16_input; do
-        [ -r "$f" ] || continue
-        v=$(cat "$f" 2>/dev/null || echo 0)
-        [ "$v" -gt 4000000 ] 2>/dev/null && { plugged=1; break; }
-    done
+# Reconstruct state after a service or system restart from the kernel property.
+if behaviour_is inhibit-charge; then
+	: > "$state"
+elif behaviour_is auto; then
+	rm -f "$state"
 fi
 
-[ "$plugged" = "1" ] || exit 0
-
-# Hysteresis. "Unknown" status write -> USBIN_SUSPEND_BIT set ("paused").
-# "Charging" -> USBIN_SUSPEND_BIT cleared.
-if [ "$cap" -ge "$STOP" ] && [ "$status" = "Charging" ]; then
-    if ! printf '%s\n' Unknown > "$charger/status" 2>/dev/null; then
-        logger -p daemon.err -t phoenix-charge-cap \
-            "FAILED to request pause at ${cap}% (stop=${STOP})"
-        exit 1
-    fi
-
-    # A successful USBIN suspend makes the SMB power path report offline.
-    online=$(cat "$charger/online" 2>/dev/null || echo 1)
-    if [ "$online" != "0" ]; then
-        logger -p daemon.err -t phoenix-charge-cap \
-            "pause write did not suspend USB input at ${cap}% (online=${online})"
-        exit 1
-    fi
-
-    : > "$state"
-    logger -t phoenix-charge-cap \
-        "paused charging at ${cap}% (stop=${STOP}, verified online=0)"
-elif [ "$cap" -le "$START" ] && [ "$status" != "Charging" ]; then
-    # Resume a pause created by us. Also recover a pre-upgrade pause for which
-    # /run has no state file, but only when TCPM still proves a source is present
-    # and the SMB input is offline.
-    online=$(cat "$charger/online" 2>/dev/null || echo 1)
-    [ -e "$state" ] || [ "$online" = "0" ] || exit 0
-
-    if ! printf '%s\n' Charging > "$charger/status" 2>/dev/null; then
-        logger -p daemon.err -t phoenix-charge-cap \
-            "FAILED to request resume at ${cap}% (start=${START})"
-        exit 1
-    fi
-
-    online=$(cat "$charger/online" 2>/dev/null || echo 0)
-    new_status=$(cat "$charger/status" 2>/dev/null || echo Unknown)
-    if [ "$online" != "1" ]; then
-        logger -p daemon.err -t phoenix-charge-cap \
-            "resume write did not restore USB input at ${cap}% (status=${new_status})"
-        exit 1
-    fi
-
-    rm -f "$state"
-    logger -t phoenix-charge-cap \
-        "resumed charging at ${cap}% (start=${START}, verified online=1, status=${new_status})"
+if [ "$voltage_uv" -ge "$STOP_VOLTAGE_UV" ] && [ ! -e "$state" ]; then
+	printf '%s\n' inhibit-charge > "$behaviour"
+	current_behaviour=$(cat "$behaviour" 2>/dev/null || echo unknown)
+	online=$(cat "$charger/online" 2>/dev/null || echo 0)
+	if ! behaviour_is inhibit-charge; then
+			logger -p daemon.err -t phoenix-charge-cap \
+				"inhibit request did not stick at ${voltage_uv}uV (${current_behaviour})"
+			exit 1
+	fi
+	if [ "$online" != "1" ]; then
+		# Restore normal charging rather than leave an ambiguous power-path state.
+		printf '%s\n' auto > "$behaviour" 2>/dev/null || true
+		logger -p daemon.err -t phoenix-charge-cap \
+			"inhibit unexpectedly removed USB input at ${voltage_uv}uV"
+		exit 1
+	fi
+	: > "$state"
+	logger -t phoenix-charge-cap \
+		"inhibited battery charging at ${voltage_uv}uV; USB input remains online"
+elif [ "$voltage_uv" -le "$START_VOLTAGE_UV" ] && [ -e "$state" ]; then
+	printf '%s\n' auto > "$behaviour"
+	current_behaviour=$(cat "$behaviour" 2>/dev/null || echo unknown)
+	if ! behaviour_is auto; then
+			logger -p daemon.err -t phoenix-charge-cap \
+				"resume request did not stick at ${voltage_uv}uV (${current_behaviour})"
+			exit 1
+	fi
+	rm -f "$state"
+	logger -t phoenix-charge-cap \
+		"restored automatic charging at ${voltage_uv}uV"
 fi

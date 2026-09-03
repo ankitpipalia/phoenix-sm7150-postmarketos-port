@@ -7,5 +7,11 @@
 table inet filter {
     chain input {
         iifname "eth*" accept comment "Allow incoming network traffic from Ethernet"
+        iifname "cni0" ip saddr 10.42.0.0/16 tcp dport { 6443, 10250 } accept comment "Allow k3s pods to reach API and kubelet"
+    }
+
+    chain forward {
+        iifname "cni0" ip saddr 10.42.0.0/16 accept comment "Allow k3s pod egress"
+        oifname "cni0" ip daddr 10.42.0.0/16 ct state established,related accept comment "Allow replies to k3s pods"
     }
 }

@@ -23,8 +23,8 @@ capacity must be measured by integrating current over a controlled test.
 
 ## Charger driver changes
 
-Patches 0007 through 0009 add an optional TCPM power-supply reference and a
-guarded USB input-current fallback to `qcom_smbx`.
+Patches 0007 through 0010 add an optional TCPM power-supply reference, a guarded
+USB input-current fallback, and hardened SMB5 control to `qcom_smbx`.
 
 Normal BC1.2 APSD results remain authoritative for CDP and DCP. The driver keeps
 the 500 mA safe default unless all relevant fallback checks pass:
@@ -46,12 +46,21 @@ the downstream SMB5 mechanism. It deliberately leaves hardware AICL and
 suspend-on-collapse enabled. Disconnect, loss of TCPM capability or a normal
 APSD result clears the override and returns control to the safe/default path.
 
-The same driver patch also:
+The driver patches also:
 
-- fixes the over-voltage status test to mask the register value, not its address;
+- read SMB5 over-voltage from status register 2 and keep status 7 for thermal
+  health;
+- decode the distinct SMB2 and SMB5 charge states correctly;
+- correct SMB5 ICL status and prescaled input-voltage handling;
 - caps fast-charge current by battery DTS data, limiting Phoenix to 1.5 A rather
   than applying the driver's previous unconditional 1.95 A request;
-- logs whether an ICL came from the safe default, APSD or TCPM fallback.
+- logs whether an ICL came from the safe default, APSD or TCPM fallback;
+- revalidate TCPM fallback policy on power-supply notifications and every 15
+  seconds while active;
+- make legacy `STATUS` and `CURRENT_MAX` writes read-only and always reprogram
+  the policy-selected ICL; and
+- expose standard `charge_behaviour=auto|inhibit-charge` without suspending the
+  USB input path.
 
 It does not enable QC/PD voltage escalation, SMB1390, a charge pump, 3 A input or
 Xiaomi's downstream 5.5 A fast-charge configuration.
@@ -114,7 +123,8 @@ overheating. At the recheck the charger reported `Good`, detected DCP and drew
 about 695 mA with AICL setting an effective 700 mA ceiling. Battery current was
 positive at about 95-103 mA and temperature was 33.3-33.4 C.
 
-Two limitations became clear over the longer sample:
+Two limitations became clear over the longer sample. Both now have implemented
+fixes, but their hardware validation is tracked separately:
 
 1. The voltage-derived SOC causes frequent limiter transitions. Journald held
    402 verified pauses and 423 verified resumes. On September 2 and 3, typical
@@ -128,24 +138,36 @@ Two limitations became clear over the longer sample:
    not a charging-limit or over-voltage event. Unattended installations need an
    orderly low-voltage shutdown policy in addition to the upper charge cap.
 
-The report totals spanning a reboot or RTC correction must also be treated as
-unreliable: the current integrator uses epoch time even though the telemetry
-already records monotonic uptime. Per-session capacity reporting should use
-positive uptime deltas and reject uptime resets. None of these observations is
-a measured battery SOH or full capacity; that still requires a controlled
-charge/discharge experiment.
+The report now integrates by monotonic uptime, segments by boot ID, and supports
+both old and new headers. None of these observations is a measured battery SOH
+or full capacity; that still requires a controlled charge/discharge experiment.
 
 ## Charge limiter
 
-`phoenix-charge-cap.sh` implements 60-70% hysteresis by suspending the SMB USB
-input at the stop threshold and resuming at the start threshold. The revised
-script validates its configuration and reads back the charger online state
-before logging success. Failed writes are errors; they are no longer silently
-reported as successful transitions.
+`phoenix-charge-cap.sh` implements voltage hysteresis at 4.00-4.10 V by writing
+`auto` or `inhibit-charge` to the SMB `charge_behaviour` property. It verifies
+that inhibition sticks and that USB input remains online. It refuses to run on
+an old kernel instead of falling back to `STATUS`/`USBIN_SUSPEND`.
 
 Because current SOC is voltage-derived, this limiter should be understood as a
 useful voltage-correlated longevity guard, not a laboratory-accurate true-SOC
 controller.
+
+The timer remains disabled by default. Do not enable it until patch 0010 is
+installed and a live upper-threshold test proves that the adapter continues to
+power the system while battery current approaches zero.
+
+## Low-voltage and temperature guard
+
+`phoenix-battery-safety.service` independently checks voltage, discharge
+current, source presence, and temperature every five seconds. Conservative
+defaults request an orderly shutdown after sustained discharge at or below
+3.45 V without input, after a shorter emergency condition at or below 3.35 V,
+or after sustained battery temperature at or above 45 C.
+
+The service is disabled by default. Its decision path passed a synthetic 3.30 V
+dry-run test on the phone; enable it only after a controlled real source-loss
+test validates thresholds and shutdown/recovery behavior.
 
 ## Telemetry and capacity measurement
 
@@ -156,7 +178,7 @@ sudo systemctl enable --now phoenix-battery-telemetry.service
 ```
 
 Logs are TSV files in `/var/log/phoenix-battery/`. They include raw battery
-voltage/current/temperature, reported SOC, SMB charger state, effective input
+voltage/current/temperature, voltage-derived level, SMB charger state, effective input
 limit, TCPM contract and Type-C power role. Retention and sample interval are
 configured in `/etc/phoenix-battery-telemetry.conf`.
 
@@ -167,14 +189,16 @@ phoenix-battery-report
 phoenix-battery-report /var/log/phoenix-battery/telemetry-YYYY-MM-DD.tsv
 ```
 
-The report uses trapezoidal integration for mAh and mWh and rejects time gaps
-over 30 seconds. A real replacement-battery capacity result requires a later
-controlled full-to-low discharge test; the short validation window is not a
-capacity measurement.
+The report uses trapezoidal integration for mAh and mWh, monotonic uptime deltas,
+and boot-ID segmentation, and rejects time gaps over 30 seconds. When a legacy
+same-day file exists, the collector starts a `-v2.tsv` file instead of mixing
+schemas. A real replacement-battery capacity result requires a later controlled
+full-to-low discharge test; the short validation window is not a capacity
+measurement.
 
 ## Rollback
 
-For a packaged kernel, remove patches 0007-0009 to return to the original
+For a packaged kernel, remove patches 0007-0010 to return to the original
 charger behavior. On the test device, the original DTB was preserved as
 `sm7150-xiaomi-phoenix.pre-tcpm.dtb` and a `postmarketOS (pre-TCPM charger DT)`
 loader entry was added before testing.

@@ -33,7 +33,7 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 | USB networking (RNDIS) | ✅ Working |
 | WiFi | ✅ Working |
 | Bluetooth | ✅ Working (adapter up, scanning works) |
-| Root access for default user | ✅ Working (`doas` and `sudo` are passwordless for `user`) |
+| Root access for default user | ✅ Working through authenticated `doas`/`sudo`; the package does not grant general passwordless root |
 | Screen wake behavior | ✅ Working (notification/task-complete wakeups disabled by dconf policy; power button wake only) |
 | Audio | ❌ Not working (ADSP sensor PD crash, q6asm-dai probe fails) |
 | Camera | ❌ Not working |
@@ -60,9 +60,7 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── 90-phoenix-mac.conf      # disable NetworkManager randomized WiFi MAC
 │   ├── phoenix-wlan-mac.sh      # deterministic wlan0 MAC provisioning
 │   ├── phoenix-wlan-mac.service # applies MAC before NetworkManager
-│   ├── doas-user-nopass.conf    # passwordless doas for default user
-│   ├── sudoers-user-nopass.conf # passwordless sudo for default user
-│   ├── device-xiaomi-phoenix.post-install  # masks uim-selection, updates dconf
+│   ├── device-xiaomi-phoenix.post-install  # masks uim-selection/qbootctl, updates dconf
 │   ├── device-xiaomi-phoenix.post-upgrade  # re-applies service/policy defaults
 │   ├── hexagonrpcd.confd        # Hexagon DSP daemon config
 │   └── modules-initfs           # Kernel modules loaded in initramfs
@@ -80,7 +78,8 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── 0006-ath10k-qmi-treat-malformed-host-cap-as-non-fatal.patch  # ath10k QMI host-cap MALFORMED_MSG fallback
 │   ├── 0007-dt-bindings-power-supply-qcom-add-TCPM-source.patch # optional TCPM source-capability phandle
 │   ├── 0008-power-supply-qcom_smbx-add-guarded-TCPM-ICL-fallback.patch # safe 1.5 A fallback with AICL
-│   └── 0009-arm64-dts-qcom-sm7150-xiaomi-wire-charger-to-TCPM.patch # connect PM6150 charger to TCPM
+│   ├── 0009-arm64-dts-qcom-sm7150-xiaomi-wire-charger-to-TCPM.patch # connect PM6150 charger to TCPM
+│   └── 0010-qcom-smbx-harden-smb5-charging-policy.patch # true charge inhibition, SMB5 corrections and TCPM revalidation
 │
 ├── docs/
 │   ├── BATTERY-CHARGING.md                 # Charger safety design, live results, telemetry and limitations

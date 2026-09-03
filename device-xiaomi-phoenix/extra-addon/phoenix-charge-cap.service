@@ -1,6 +1,6 @@
 [Unit]
-Description=Phoenix charge limiter (hysteresis pause at threshold)
-ConditionPathExists=/sys/class/power_supply/pm8150b-charger/status
+Description=Phoenix voltage-based battery charge inhibitor
+ConditionPathExists=/sys/class/power_supply/pm8150b-charger/charge_behaviour
 
 [Service]
 Type=oneshot

@@ -1,6 +1,6 @@
 [Unit]
-Description=Run phoenix charge limiter every minute
-ConditionPathExists=/sys/class/power_supply/pm8150b-charger/status
+Description=Run Phoenix voltage-based charge limiter every minute
+ConditionPathExists=/sys/class/power_supply/pm8150b-charger/charge_behaviour
 
 [Timer]
 OnBootSec=30s

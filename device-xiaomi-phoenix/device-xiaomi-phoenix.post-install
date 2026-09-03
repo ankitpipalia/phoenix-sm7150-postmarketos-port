@@ -9,6 +9,11 @@ rm -f /etc/systemd/system/ModemManager.service.requires/msm-modem-uim-selection.
 mkdir -p /etc/systemd/system
 ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
 
+# Phoenix boots through U-Boot/systemd-boot and does not expose Android A/B
+# slots. qbootctl otherwise fails every boot with "No slots found" and leaves
+# the system in a misleading degraded state.
+ln -sf /dev/null /etc/systemd/system/qbootctl.service
+
 if command -v systemctl >/dev/null 2>&1; then
 	# Pick up the /dev/null mask above and any unit-file changes shipped
 	# by this upgrade. Without daemon-reload, masking is a no-op until
