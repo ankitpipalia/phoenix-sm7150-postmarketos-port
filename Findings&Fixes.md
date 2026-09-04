@@ -10,7 +10,47 @@ was compiled locally but has not yet been installed on the phone. Values below
 are observations from this test device, not guarantees for every Phoenix,
 battery, charger, cable, or USB-C hub.
 
-## Implementation and test status — September 5, 2026 (updated 2026-09-06 00:05 UTC, review3 P0 fixes, r24 installed)
+## Implementation and test status — September 5, 2026
+
+### Read-only repository and connectivity audit — 2026-09-05 01:44 IST
+
+The repository was re-audited without modifying the worktree or the device.
+`main` was clean at `d96d336`, exactly matched `origin/main`, and was the only
+local or remote branch. The device package was `pkgrel=24`; its 33 APKBUILD
+source names matched its 33 checksum-entry names. All shell scripts parsed with
+their declared interpreter. Commits `0aade85`, `fa61de3`, and `d96d336` passed
+`git show --check`; the earlier kernel-patch commits `ac29288` and `5bf00e5`
+still contain non-functional whitespace warnings inside patch text.
+
+The audit found four open implementation defects that must be fixed and tested:
+
+1. The pmaports sync helper uses the combined old/current patch list for both
+   removal and insertion. It can re-add stale patches to `source=` and can append
+   `dummy` checksum records to `sha512sums`.
+2. `phoenix-charge-cap.sh reset` validates QGauge voltage before processing the
+   reset request, so missing/invalid gauge data can leave an owned
+   `inhibit-charge` state active. The oneshot unit also has no `ExecStop` or
+   separate reset unit wired to timer shutdown.
+3. The telemetry log selector is capped at `-v4`. If base, v2, v3, and v4 all
+   have incompatible headers, a current-schema row is appended to the existing
+   incompatible v4 file.
+4. Type-C recovery falls back to capacity only when a readable voltage file
+   contains invalid data. It does not use capacity when both voltage files are
+   absent or unreadable.
+
+USB and LAN connectivity were also checked read-only. Neither
+`172.16.42.1:22` nor `192.168.1.101:22` was reachable. No USB network or serial
+gadget enumerated on the workstation, the candidate USB Ethernet interfaces
+were inactive, and `172.16.42.1` followed the normal LAN default route instead
+of a USB subnet route. SSH did not reach authentication, so no device-side
+claims below were revalidated during this audit.
+
+The earlier live notes contain timestamps through `2026-09-06 00:05 UTC`, which
+are later than this workstation audit clock. They are retained below as prior
+device-recorded observations, not as independently verified chronology. Compare
+workstation UTC, device UTC, uptime, and boot ID at the next successful login.
+
+### Prior review3 implementation snapshot
 
 | Change | Repository | Device result (live re-audit) |
 | --- | --- | --- |
@@ -28,6 +68,11 @@ battery, charger, cable, or USB-C hub.
 | Optional preset handling | `ignore` preserves opt-in across upgrades | Verified r21 kept `telemetry/typec-recover/screen-off/usb-host-wake enabled`, `charge-cap/safety disabled` |
 | Kernel 0011 upstream fixes | New patch `0011-qcom-smbx-upstream-fixes-and-robustness.patch` (watchdog base, OV notify, float off-by-one, ICL ordering/log, revalidation) | Compile-tested via `git apply --check`; not yet flashed |
 | Userspace env override | `phoenix-battery-safety.sh` + `phoenix-charge-cap.sh` now preserve env over config for testing | Device-tested 2026-09-05: env `START==STOP` correctly rejected, `EMERGENCY_SAMPLES` override works, thermal with invalid voltage fires |
+| Charge-cap reset lifecycle | Reset helper exists, but is ordered after gauge validation and is not connected to unit/timer stop | **Open:** move reset handling before all gauge reads and provide a documented/wired safe disable path |
+| Telemetry schema rollover | Base plus v2/v3/v4 selection exists | **Open:** version selection is capped and can append to a mismatched non-empty v4 file |
+| Type-C capacity fallback | Voltage primary, capacity fallback intended | **Open:** fallback is skipped when both voltage attributes are absent/unreadable |
+| pmaports patch-manifest cleanup | Old manifest is collected to remove stale Phoenix patches | **Open:** removal and insertion sets are conflated; stale sources and dummy checksums can be emitted |
+| llama.cpp inference | CPU is feasible; Turnip/Vulkan is the best first accelerator candidate; OpenCL and Hexagon are later research | **Not runtime-verified:** prior audit saw `/dev/dri/card0` and `renderD128`, but Vulkan enumeration, package availability on the configured repositories, performance, stability, memory pressure, and thermals remain untested |
 
 Live r24 upgrade preserved opt-in state and left `charge-cap`/`safety` disabled as intended. Pre-upgrade manual units and live files remain backed up under
 `/var/backups/phoenix-fix-20260904` (including `systemd-manual/` with `phoenix-eth0-autoup.*`). `r24` was installed via `apk add --allow-untrusted` at `2026-09-06 00:05 UTC` with `postmarketos-mkinitfs` regenerating `initramfs`/`BOOTAA64.EFI`/`sm7150-xiaomi-phoenix.dtb`. The battery safety service remains disabled
@@ -56,10 +101,10 @@ should not yet be described as a production-safe unattended 24/7 charger.
 
 The remaining highest-priority validation work is:
 
-1. Install the rebuilt kernel (r22 with patches 0010+0011) and prove that `charge_behaviour=inhibit-charge` leaves USB input `online=1` while battery current settles near zero. **Live 2026-09-05:** May kernel still lacks `charge_behaviour`; new `0011` fixes float selector, watchdog base, OV notify, ICL ordering/log and revalidation robustness are compile-tested and device-logic-tested (0.847 mWh, thermal fail-open, Vnow emergency), but not yet flashed.
+1. Install the rebuilt kernel containing patches 0010+0011 and prove that `charge_behaviour=inhibit-charge` leaves USB input `online=1` while battery current settles near zero. **Prior live note:** the May kernel still lacked `charge_behaviour`; new `0011` fixes float selector, watchdog base, OV notify, ICL ordering/log and revalidation robustness are compile-tested and device-logic-tested (0.847 mWh, thermal fail-open, Vnow emergency), but not yet flashed.
 2. Run controlled low-voltage/source-loss and thermal-input tests before enabling the shutdown guard. **Live:** guard `disabled` as intended; synthetic tests now cover independent channels (`temp 500` with invalid voltage fires, `voltage_now 3300000` vs `voltage_avg 3500000` triggers emergency), sensor-failure policy (12 samples logs + conservative shutdown), and `ConditionPathExists` removed (`Restart=always`); real source-loss still pending.
 3. Exercise SMB5 over-voltage/thermal status reporting and all TCPM source transitions on hardware. **Live:** patches 0010+0011 compile-tested; `dmesg` still old `SMB5 Generation SMB5` without OV fix until flash; `health=Good` cannot validate OV until kernel upgrade. Validate with synthetic register instrumentation, not real OV.
-4. Upgrade the live device package to r22 and verify `20-phoenix-optional.preset` + env-override handling. **Live 2026-09-03 23:07:** r21 installed; r22 installed 2026-09-05 23:33 via `apk add --allow-untrusted` (preset `ignore` preserved `telemetry/typec-recover/screen-off/usb-host-wake enabled`, `charge-cap/safety disabled`); `phoenix-battery-safety.service` now `Restart=always` without `ConditionPathExists`, `phoenix-charge-cap.sh` now `START<STOP` +50mV + env override.
+4. Revalidate the installed r24 device package, `20-phoenix-optional.preset`, and env-override handling after connectivity is restored. **Prior live notes:** r21 and then r22 were installed and preset `ignore` preserved the opt-in state; a later note reports r24 installed. These observations were not rechecked in the 2026-09-05 read-only audit because neither SSH path was reachable.
 
 ## System architecture
 
@@ -151,7 +196,11 @@ have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with 
 | **P1** | Implemented, compile-tested: remove cached ICL early return/write API (now log-on-change) |
 | **P1** | Implemented: label QGauge output as voltage-derived level |
 | **P1** | Implemented and device-tested: monotonic uptime plus boot ID + `ls -1t` + power integration fix |
-| **P1** | Rebuild/flash the current package (r22) and kernel (0010+0011) as one tested image — r22 device-logic-tested, kernel compile-tested |
+| **P1** | Rebuild/flash the current r24 package and kernel (0010+0011) as one tested image; userspace is logic-tested and the kernel is compile-tested, but the combination is not hardware-validated |
+| **P1** | **Open:** make charge-cap reset independent of QGauge readings and wire/document a safe timer-disable path that restores owned inhibition to `auto` |
+| **P1** | **Open:** separate stale-entry removal from current-entry insertion in the pmaports sync helper; never emit dummy checksum records |
+| **P1** | **Open:** make telemetry schema rollover unbounded or fail closed without appending when all candidate headers mismatch |
+| **P1** | **Open:** use the Type-C capacity fallback when voltage files are absent as well as when their contents are invalid |
 | **P1** | Partial: device-provided passwordless removed, `eth*` still trusted (P2), unmanaged `user-nopasswd` remains (see §18) |
 | **P2** | Add sustained thresholds and minimum charge/inhibit dwell times (proposed 60s/2-5m/30m in §3, not yet implemented) |
 | **P2** | Clearly report learned FCC and SOH as unavailable |
@@ -276,6 +325,18 @@ adapter-powered behavior and battery current must be proven on Phoenix before
 deployment. If inhibition cannot preserve the system power path on this PMIC
 configuration, stop and investigate instead of falling back silently to
 USB-input cycling.
+
+#### Open reset-lifecycle defect found in the read-only audit
+
+The script currently checks `qcom_qg/voltage_now` and parses a valid voltage
+before it handles the `reset` argument. A missing or invalid gauge therefore
+causes an early successful exit while an ownership marker and
+`inhibit-charge` may remain active. Process reset immediately after locating
+and validating the writable `charge_behaviour` attribute; reset must not depend
+on voltage, source presence, or normal threshold configuration. The oneshot
+service also has no `ExecStop`, so merely disabling/stopping the timer does not
+invoke the reset helper. Provide an explicit, tested disable/reset workflow or
+a dedicated reset unit, and verify that external inhibition is never cleared.
 
 After proper inhibition works, add sustained thresholds and dwell time, for
 example:
@@ -435,6 +496,16 @@ The collector starts a `-v2.tsv` file rather than mixing its schema into an
 existing same-day legacy log. **2026-09-05 fix:** collector now has `SCHEMA_VERSION=2` with `v3` fallback, validates selected log's header before append, and prefers online TCPM source deterministically. Report now uses `ls -1t | head -1` to prefer `-v2`, integrates `Pavg=(V0*I0+V1*I1)/2` for correct mWh, and respects `LOG_DIR` env override. Device-tested: `0.847 mWh` power integration correct, `ls -1t` prefers `-v2`, `boot_id` still correct. It
 continues integrating QGauge battery current, not charger input current.
 
+#### Open schema-rollover defect found in the read-only audit
+
+Schema rollover is hard-coded through `-v4`. If all four candidate files are
+non-empty and have mismatched headers, the final validation selects the same
+incompatible v4 file and then appends a new-format row to it. Replace the nested
+v2/v3/v4 selection with a loop that chooses the first absent or matching file,
+or exit without writing if a safe target cannot be created. Add a test where
+base through v4 all contain distinct incompatible headers and assert that none
+of them receives a row.
+
 ### 10. Learned capacity and SOH are unavailable
 
 The simple QGauge driver reads a learned-capacity SDAM location but does not
@@ -575,6 +646,15 @@ the charger is offline, and battery current remains negative (synthetic check: `
 recovery mechanism, but do not rely on a late 30% threshold as the primary
 unattended protection; the low-voltage shutdown service remains mandatory. **2026-09-05 fix:** typec-recover now uses voltage `3600000uV` as primary urgency (capacity as fallback), acquires `/run/lock/phoenix-usb-role.lock` shared with `usb-host-wake`, verifies `power_role` readback (`[sink]`/`[source]`) before logging, and logs deferred `stuck-as-source` above threshold for visibility. `usb-host-wake` also uses same lock and returns `exit 1` on final failure for `systemctl --failed` visibility. Device-logic-tested via `POWER_SUPPLY_ROOT` fakes.
 
+#### Open fallback defect found in the read-only audit
+
+The current capacity fallback is nested inside the condition that at least one
+voltage attribute is readable. When both `voltage_avg` and `voltage_now` are
+absent or unreadable, `urgent` remains false and recovery exits without checking
+capacity. Treat missing voltage attributes the same as invalid voltage content,
+then evaluate a valid capacity sample conservatively. Add separate tests for
+missing files, unreadable files, invalid contents, and invalid capacity.
+
 ## Security findings
 
 ### 18. Development convenience creates a large trust boundary
@@ -604,6 +684,274 @@ account plus `NOPASSWD` `sudo` is effectively root without a password.
 5. Review the Cloudflare tunnel configuration and container restart history. **Live:** `cloudflared Up ~1h` `phoenix-monitor Up 11 days`; inspect `docker logs cloudflared`.
 6. Keep a documented local recovery path before tightening remote access.
 
+## Repository tooling finding
+
+### 19. The pmaports sync helper conflates removal and insertion sets
+
+The sync script correctly saves the previous Phoenix patch manifest, but then
+combines old and current names and passes that combined file to
+`update_source_block()`. That function uses every input entry both as a removal
+target and as an entry to append. A patch removed from the current repository
+can therefore be inserted back into the destination APKBUILD. The checksum path
+has the same structural problem: `dummy  <old-patch>` records are added to the
+list consumed by `update_sha512_entries()`, which appends every list record.
+
+#### Fix required
+
+Use two explicit inputs for both transformations:
+
+- removal set: previous manifest plus current manifest;
+- insertion set: current patch names/checksums only.
+
+Never represent removal-only checksums as appendable dummy records. Add an
+integration fixture containing one unrelated upstream patch, one stale Phoenix
+patch, and the current Phoenix patch set. After two sync runs, assert that the
+result is idempotent, the unrelated patch remains, the stale patch is absent,
+and every appended checksum is a real 128-hex-character SHA-512 value.
+
+## llama.cpp feasibility and maximum-performance plan
+
+### 20. Corrected feasibility verdict
+
+The POCO X2 hardware is capable of running llama.cpp, but acceleration must be
+proved on this port rather than inferred from the Android product
+specification.
+
+| Backend | Assessment for this device |
+| --- | --- |
+| CPU | **High confidence.** Generic aarch64 llama.cpp should run on the Kryo 470 CPU. Establish this baseline first. |
+| Vulkan/Turnip | **Plausible and the first accelerator to test.** Mesa Turnip supports Adreno 6xx, the repository supplies the GPU ZAP firmware, and a prior live audit saw DRM nodes. `vulkaninfo` and llama.cpp execution have not yet proved that this Adreno 618 path works correctly. |
+| OpenCL | **Experimental follow-up.** Qualcomm advertises OpenCL for the SoC, but that describes the platform/proprietary stack. It does not prove a usable OpenCL compute implementation under mainline Linux and Mesa on this phone. |
+| Hexagon/HTP | **Not a practical current target.** The SoC has Hexagon 688 and the port starts CDSP, but current llama.cpp HTP artifacts are documented for newer v73/v75/v79/v81 targets, not this generation. Firmware, FastRPC and a running remoteproc alone do not establish backend compatibility. |
+
+Qualcomm documents the Snapdragon 730G as an eight-core Kryo 470 design with
+two performance and six efficiency cores, up to 2.2 GHz, an Adreno 618 GPU,
+Hexagon 688, Vulkan 1.1 and OpenCL 2.0 FP. Those are SoC capabilities, not a
+guarantee that every mainline driver/API path is operational. See the
+[Snapdragon 730G product brief](https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/qualcomm-snapdragon-730g-mobile-platform-product-brief.pdf).
+
+Mesa documents Turnip as a Vulkan 1.3 driver for Adreno 6xx and documents
+Adreno as unified-memory hardware. The GPU therefore has no separate pool of
+VRAM: model weights, KV cache, Vulkan buffers, the OS, k3s, containers and file
+cache all compete for the same physical RAM. See the
+[Mesa Freedreno/Turnip documentation](https://docs.mesa3d.org/drivers/freedreno.html).
+
+The repository-specific prerequisites are encouraging but incomplete:
+
+- the device tree enables `&gpu` and selects
+  `qcom/sm7150/phoenix/a615_zap.mbn`;
+- the firmware package also depends on the common Adreno A630 firmware;
+- the prior live snapshot reports `/dev/dri/card0` and `/dev/dri/renderD128`,
+  but the project README correctly labels 3D acceleration as untested;
+- no successful `vulkaninfo`, llama.cpp device listing, model load or GPU
+  inference result has been recorded;
+- the latest connectivity audit could not reach the device to close those
+  gaps.
+
+### 21. Package claims verified, with an important repository caveat
+
+Alpine edge currently publishes `mesa-vulkan-freedreno` for aarch64, providing
+the Turnip Vulkan library. Its aarch64 llama.cpp package family includes
+`llama.cpp-libs` and a `llama.cpp-vulkan` subpackage, and `vulkan-tools` provides
+`vulkaninfo`. See the
+[Alpine Freedreno Vulkan package](https://pkgs.alpinelinux.org/package/edge/main/aarch64/mesa-vulkan-freedreno),
+[Alpine aarch64 llama.cpp libraries](https://pkgs.alpinelinux.org/package/edge/community/aarch64/llama.cpp-libs),
+and [Alpine aarch64 Vulkan tools](https://pkgs.alpinelinux.org/package/v3.22/main/aarch64/vulkan-tools).
+
+Do not assume those exact packages are installable until the device reports its
+configured branch and enabled `community` repository. Package versions and
+subpackage layout can change on edge. Run discovery first:
+
+```sh
+cat /etc/alpine-release
+sed -n '1,120p' /etc/apk/repositories
+apk policy mesa-vulkan-freedreno vulkan-loader vulkan-tools \
+  llama.cpp llama.cpp-cpu llama.cpp-vulkan
+```
+
+If all candidates resolve for aarch64, the initial packaged installation is:
+
+```sh
+sudo apk add mesa-vulkan-freedreno vulkan-loader vulkan-tools \
+  llama.cpp llama.cpp-vulkan
+```
+
+Use the distribution build for the first reproducible comparison. A custom
+native build may be tested later, but only after preserving the package version
+and baseline results. Upstream documents Vulkan builds with
+`-DGGML_VULKAN=ON` and full layer offload with `-ngl 99`; see the
+[llama.cpp build documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md).
+
+### 22. Required zero-load hardware validation
+
+Before loading a model, record:
+
+```sh
+uname -a
+uname -m
+free -h
+grep -E 'MemTotal|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
+
+ls -l /dev/dri
+ls -l /usr/share/vulkan/icd.d 2>/dev/null
+apk info | grep -E 'llama|mesa|freedreno|vulkan'
+vulkaninfo --summary 2>&1
+
+dmesg | grep -Ei 'msm|adreno|a6[0-9][0-9]|gmu|gpu|iommu|fault'
+for cpu in /sys/devices/system/cpu/cpu[0-9]*; do
+  printf '%s ' "${cpu##*/}"
+  cat "$cpu/cpufreq/cpuinfo_max_freq" 2>/dev/null || echo unknown
+done
+```
+
+Success requires a hardware Adreno/Turnip Vulkan device, not `llvmpipe` or
+another software Vulkan implementation. Also confirm that the unprivileged
+llama.cpp service account can open `renderD128`; adding broad root privileges is
+not an acceptable GPU fix. Check `dmesg` after `vulkaninfo` for GPU/IOMMU faults.
+
+Only then run:
+
+```sh
+llama-cli --version
+llama-cli --list-devices
+llama-bench --help
+```
+
+Record exact package versions, llama.cpp build/commit, Mesa version, Vulkan
+driver/device names, kernel build, boot ID and model SHA-256 with every result.
+
+### 23. Model and memory policy for 5.4 GiB usable RAM
+
+The earlier device audit reported about 5.4 GiB usable memory. A model file's
+size is not its complete runtime footprint: add KV cache, compute buffers,
+backend allocations, page tables, the OS, and existing server workloads.
+Turnip's unified memory does not create additional VRAM.
+
+| Model class | Approximate Q4 weight range | Recommendation |
+| --- | ---: | --- |
+| 0.5-1B | 0.4-0.8 GB | Best smoke test and tuning model |
+| 1-1.5B | 0.7-1.2 GB | Best likely always-on class |
+| 2-3B | 1.3-2.3 GB | Practical candidate after monitoring RAM and thermals |
+| 7-8B | 4-5 GB | Not an acceptable always-on target with 5.4 GiB usable RAM and existing services; likely to swap or OOM once runtime buffers and context are included |
+| 14B and larger | 8 GB and above | Out of scope |
+
+These are planning ranges, not promises; architecture and quantization change
+the exact size. Begin with a 0.5-1.5B instruct GGUF in Q4_0 and Q4_K_M variants,
+with one request slot and a 2048-token context. Increase to 3B only after
+capturing peak resident memory and `MemAvailable`. Do not use a 7B model merely
+because its GGUF can be mapped: reliable service operation needs headroom and
+must not depend on compressed swap/zram thrashing.
+
+The Snapdragon Linux example in llama.cpp uses Llama 3.2 3B Q4_0, but that page
+is specifically a newer Snapdragon/Hexagon deployment workflow and is not proof
+that Phoenix's Hexagon 688 is supported. See the
+[llama.cpp Snapdragon Linux guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/linux.md).
+
+### 24. Benchmark before choosing CPU or Vulkan
+
+`-ngl 99` requests maximum layer offload; it does not guarantee maximum speed.
+An older mobile GPU without modern matrix hardware can lose to CPU because of
+kernel efficiency, dispatch overhead, unsupported operations, thermal limits,
+or driver behavior. Partial offload can also be worse than either endpoint.
+
+Use the same local model, prompt/generation sizes and cool starting temperature
+for every run. Start with this matrix:
+
+```sh
+# CPU baseline: discover the best thread count rather than assuming six.
+for threads in 1 2 4 6 8; do
+  llama-bench -m model.gguf -p 512 -n 128 -r 3 -t "$threads" -ngl 0
+done
+
+# Vulkan: compare none, partial and full offload using the best CPU thread count.
+for layers in 0 1 8 16 99; do
+  llama-bench -m model.gguf -p 512 -n 128 -r 3 -t BEST -ngl "$layers"
+done
+```
+
+Replace `BEST` with the measured CPU winner. If the model has fewer than 16
+layers, choose partial values appropriate to its actual layer count. Run a
+second warm pass because Vulkan shader/pipeline cache creation can distort the
+first result. Record both prompt-processing and token-generation throughput;
+they can favor different backends.
+
+Next sweep conservative batch/microbatch values such as 128/64, 256/128 and
+512/256. Do not start at a very large batch on Adreno: excessive allocation can
+cause device loss or OOM. Keep context at 2048 until the backend is stable, then
+test 4096 while measuring memory. Test CPU affinity only after mapping maximum
+frequency per logical CPU; compare the two performance cores, all cores, and
+the scheduler default rather than assuming `-t 6` maps to the desirable cores.
+
+For a single-user service, begin with one parallel slot. More slots raise KV
+cache and working-set memory and may reduce interactive token rate. A sensible
+first server profile after benchmarking is conceptually:
+
+```sh
+llama-server -m model.gguf -c 2048 -np 1 -t BEST -ngl BEST_NGL \
+  --host 127.0.0.1 --port 8080
+```
+
+Bind to loopback initially. If remote access is required, put it behind an
+authenticated reverse proxy and explicit firewall rule; do not expose an
+unauthenticated inference endpoint merely to gain convenience.
+
+### 25. Optimize for safe sustained performance
+
+Maximum useful performance on a phone is the highest repeatable throughput
+after thermal equilibrium, not the first boosted run. Do not disable thermal
+zones, cooling devices, kernel throttling, battery guards, or charger safety.
+Do not force permanent maximum CPU/GPU clocks until the thermal controls have
+been validated under combined CPU/GPU load.
+
+For every candidate configuration, run at least 15-30 minutes while recording:
+
+- prompt and generation tokens/second over time;
+- `MemAvailable`, process RSS, swap/zram use and OOM events;
+- all available thermal-zone temperatures;
+- per-policy CPU frequency and GPU devfreq, where exposed;
+- QGauge voltage, current and temperature plus charger/TCPM state;
+- GPU faults, hangs, resets and IOMMU errors from the kernel log;
+- whether k3s, networking and telemetry remain responsive.
+
+Use active external cooling and an unobstructed enclosure if continuous load is
+intended, but keep the battery within the project's validated safety envelope.
+Benchmark once with nonessential containers/k3s stopped to establish hardware
+potential, then again with the normal service workload. Any service changes
+must be deliberate and reversible; the production number is the second result.
+
+### 26. OpenCL and Hexagon are later experiments
+
+The current official llama.cpp OpenCL documentation is aimed first at Qualcomm
+Adreno, but its verified list contains much newer GPUs. It warns that A6x phone
+drivers/compilers are commonly too old; Phoenix instead uses Mesa, whose Rusticl
+exposure and llama.cpp kernel performance would need separate proof. Vulkan is
+therefore the cleaner first experiment. See the
+[llama.cpp OpenCL backend documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/OPENCL.md).
+
+The experimental Hexagon backend currently documents NPU-side libraries for
+v73, v75, v79 and v81. It does not document a Hexagon 688/v68 artifact. Do not
+install Snapdragon HTP binaries for a mismatched architecture or reinterpret a
+running CDSP remoteproc as compatibility. Treat Hexagon support as a separate
+porting project requiring a confirmed architecture target, matching SDK/runtime
+libraries, FastRPC behavior and upstream backend support. See the
+[llama.cpp Hexagon developer documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/developer.md).
+
+### 27. llama.cpp acceptance criteria
+
+Do not call GPU acceleration working until all of these are recorded:
+
+- `vulkaninfo` enumerates hardware Adreno through Turnip without GPU faults;
+- llama.cpp lists the Vulkan device and loads a small GGUF successfully;
+- generated output matches a CPU sanity run closely enough to detect backend
+  corruption;
+- repeated CPU, partial-offload and full-offload benchmarks identify the actual
+  throughput winner;
+- a 30-minute run reaches stable temperature without hangs, resets, OOM or
+  unsafe battery behavior;
+- peak memory leaves sufficient headroom for the normal server workload;
+- the final service is unprivileged, authenticated if network-accessible, and
+  constrained to the tested model/context/concurrency configuration.
+
 ## Production-safety validation matrix
 
 | Test | Required result |
@@ -621,11 +969,15 @@ account plus `NOPASSWD` `sudo` is effectively root without a password.
 | Charge upper threshold | system remains adapter-powered |
 | One hour inhibited | battery current near zero; no shallow cycling |
 | Service/daemon restart | reconstruct safe state from hardware |
+| Disable/reset with QGauge missing or invalid | owned inhibition returns to `auto`; external inhibition remains untouched |
 | Synthetic/register OV test | Linux reports OV from status 2 correctly |
 | Cool/warm/cold/hot tests | correct status-7 health mapping |
 | Wall clock jumps forward/back | integrated mAh/mWh unchanged |
 | Reboot between telemetry rows | no integration across boot IDs |
+| Base plus v2-v4 telemetry headers all mismatch | no existing file is modified; a safe new version is created or collection fails closed |
 | External power loss at low voltage | automatic orderly shutdown |
+| Type-C voltage files absent, capacity low | capacity fallback triggers the guarded recovery path |
+| Sync after deleting a Phoenix patch | stale source/checksum removed, unrelated patches preserved, no dummy checksum emitted |
 | k3s pod to API/DNS/egress | succeeds with least-privilege firewall |
 | Hard power-loss recovery | ESP remains clean and Ethernet returns |
 
@@ -640,6 +992,10 @@ true:
 - TCPM capability loss is actively observed and forces a safe ICL;
 - actual ICL cannot diverge silently from cached policy;
 - telemetry uses monotonic, boot-segmented integration;
+- charge-cap reset is independent of gauge availability and has a safe disable workflow;
+- telemetry never appends across incompatible schemas;
+- Type-C urgency falls back correctly when voltage attributes are absent;
+- pmaports synchronization removes stale entries without re-inserting them;
 - k3s core services are healthy under the final firewall policy;
 - the current package and kernel are installed together, with manual overrides
   removed or documented;
@@ -670,3 +1026,11 @@ finished unattended always-powered server.
 - [August 20, 2026 SMB5 v4 patch](https://lkml.iu.edu/2608.2/07902.html)
 - [Qualcomm downstream SM7150 BMS implementation](https://android.googlesource.com/kernel/msm.git/+/0bdc64f155814eb6a109d0ec9e3965c821da5853/drivers/power/supply/google/sm7150_bms.c)
 - [Qualcomm downstream QGauge-related history](https://android.googlesource.com/kernel/msm/+/9bc512676061161105fa95ccf40532f625c05b7e%5E2..9bc512676061161105fa95ccf40532f625c05b7e/)
+- [Qualcomm Snapdragon 730G product brief](https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/qualcomm-snapdragon-730g-mobile-platform-product-brief.pdf)
+- [Mesa Freedreno and Turnip documentation](https://docs.mesa3d.org/drivers/freedreno.html)
+- [Alpine aarch64 Mesa Freedreno Vulkan package](https://pkgs.alpinelinux.org/package/edge/main/aarch64/mesa-vulkan-freedreno)
+- [Alpine aarch64 llama.cpp package family](https://pkgs.alpinelinux.org/package/edge/community/aarch64/llama.cpp-libs)
+- [llama.cpp Vulkan build documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/build.md)
+- [llama.cpp OpenCL backend documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/OPENCL.md)
+- [llama.cpp Snapdragon Linux guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/linux.md)
+- [llama.cpp Hexagon backend details](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/developer.md)
