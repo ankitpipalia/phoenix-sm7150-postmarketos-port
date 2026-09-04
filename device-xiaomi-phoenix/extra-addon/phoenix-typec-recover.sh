@@ -52,7 +52,8 @@ if ! is_stuck_source; then
 	exit 0
 fi
 [ "$(cat "$charger/online" 2>/dev/null)" = "0" ] || exit 0
-[ "$(cat "$charger/status" 2>/dev/null)" = "Discharging" ] || exit 0
+# Note: qcom_smbx never returns Discharging, so don't require charger/status
+# The stronger evidence is partner present + source + offline + low voltage (checked below)
 
 # Check voltage/ capacity urgency. Voltage primary, capacity only if voltage invalid.
 urgent=0
@@ -113,7 +114,7 @@ cap_disp=$(cat "$qg/capacity" 2>/dev/null || echo "?")
 voltage_disp=$(cat "$qg/voltage_avg" 2>/dev/null || cat "$qg/voltage_now" 2>/dev/null || echo "?")
 if ! echo sink > "$typec/power_role" 2>/dev/null; then
 	logger -p daemon.err -t phoenix-typec-recover "failed to write sink to power_role at ${cap_disp}%/${voltage_disp}uV"
-	exit 0
+	exit 1
 fi
 sleep 3
 new_online=$(cat "$charger/online" 2>/dev/null || echo 0)
@@ -129,7 +130,7 @@ for _tcpm in "$POWER_SUPPLY_ROOT"/tcpm-source-psy-*; do
 	[ -d "$_tcpm" ] || continue
 	if [ "$(cat "$_tcpm/online" 2>/dev/null)" = "1" ]; then tcpm_online=1; break; fi
 done
-if [ "$sink_ok" = "1" ] && { [ "$new_online" = "1" ] || [ "$new_status" = "Charging" ] || [ "$tcpm_online" = "1" ]; }; then
+if [ "$sink_ok" = "1" ] && { [ "$new_online" = "1" ] || [ "$tcpm_online" = "1" ]; }; then
 	logger -t phoenix-typec-recover "recovered to sink at ${cap_disp}%/${voltage_disp}uV (external power detected after manual swap, power_role $new_pr)"
 	exit 0
 fi
@@ -137,7 +138,7 @@ fi
 # No external power — restore source so the hub keeps VBUS, verify.
 if ! echo source > "$typec/power_role" 2>/dev/null; then
 	logger -p daemon.err -t phoenix-typec-recover "no external power at ${cap_disp}%/${voltage_disp}uV — failed to revert to source (hub may lose VBUS)"
-	exit 0
+	exit 1
 fi
 sleep 1
 revert_pr=$(cat "$typec/power_role" 2>/dev/null || echo "")

@@ -123,12 +123,19 @@ while :; do
 
 	# Log prolonged sensor failure, and fail-safe to shutdown if voltage/current
 	# stay invalid while external power is absent (cannot prove safe).
-	# Emergency guard is degraded if Vnow is invalid but Vavg is valid - log it.
+	# Use independent flags for each sensor to avoid shadowing
 	if [ "$vnow_invalid_count" -ge 12 ] && [ "$vavg_invalid_count" -lt 12 ]; then
 		if [ "$sensor_fail_logged" -eq 0 ]; then
 			logger -p daemon.warning -t phoenix-battery-safety "instantaneous voltage unavailable for ${vnow_invalid_count} samples; emergency guard degraded, sustained guard remains active"
 			sensor_fail_logged=1
 		fi
+	elif [ "$vnow_invalid_count" -ge 12 ] && [ "$vavg_invalid_count" -ge 12 ] && ! external_power_online; then
+		# Both voltage channels lost and no external power: cannot prove cell safety
+		if [ "$sensor_fail_logged" -eq 0 ]; then
+			logger -p daemon.crit -t phoenix-battery-safety "both voltage sensors invalid for ${vavg_invalid_count} samples without external power; shutting down"
+			sensor_fail_logged=1
+		fi
+		shutdown_now "both voltage sensors invalid for ${vavg_invalid_count} samples without external power; shutting down"
 	elif [ "$vnow_invalid_count" -ge 12 ] || [ "$current_invalid_count" -ge 12 ] || [ "$vavg_invalid_count" -ge 12 ]; then
 		if [ "$sensor_fail_logged" -eq 0 ]; then
 			logger -p daemon.crit -t phoenix-battery-safety "sensor failure: vnow_invalid=${vnow_invalid_count} vavg_invalid=${vavg_invalid_count} current_invalid=${current_invalid_count} temp_invalid=${temp_invalid_count}"
@@ -160,19 +167,14 @@ while :; do
 	fi
 
 	# Emergency channel: must use instantaneous voltage_now, not avg.
-	# Current is optional confirmation; voltage + no external power is sufficient.
-	if valid_uint "$voltage_now_uv"; then
-		if [ "$voltage_now_uv" -le "$EMERGENCY_VOLTAGE_UV" ] && ! external_power_online; then
-			# If current is valid, require discharging; if invalid, fail conservatively on voltage alone
-			if valid_int "$current_ua"; then
-				if [ "$current_ua" -lt 0 ]; then
-					emergency_count=$((emergency_count + 1))
-				else
-					emergency_count=0
-				fi
-			else
-				emergency_count=$((emergency_count + 1))
-			fi
+	# Correct predicate: critical_voltage AND (proof_of_discharge OR no_external_source)
+	if valid_uint "$voltage_now_uv" && [ "$voltage_now_uv" -le "$EMERGENCY_VOLTAGE_UV" ]; then
+		proof_discharge=0
+		no_source=0
+		if valid_int "$current_ua" && [ "$current_ua" -lt 0 ]; then proof_discharge=1; fi
+		if ! external_power_online; then no_source=1; fi
+		if [ "$proof_discharge" -eq 1 ] || [ "$no_source" -eq 1 ]; then
+			emergency_count=$((emergency_count + 1))
 		else
 			emergency_count=0
 		fi
@@ -184,25 +186,18 @@ while :; do
 	fi
 
 	# Sustained low-voltage channel: uses voltage_avg (fallback to voltage_now if avg absent)
-	# Must not be disabled just because VBUS reports online; battery discharging is primary.
+	# Correct predicate: Vavg <= threshold AND (current<0 OR no_external_source)
 	sustained_voltage_uv="$voltage_avg_uv"
 	if ! valid_uint "$sustained_voltage_uv"; then
 		sustained_voltage_uv="$voltage_now_uv"
 	fi
-	if valid_uint "$sustained_voltage_uv"; then
-		if [ "$sustained_voltage_uv" -le "$SHUTDOWN_VOLTAGE_UV" ]; then
-			# Check discharging: if current valid, require <0; if invalid, require no external power
-			should_count=0
-			if valid_int "$current_ua"; then
-				if [ "$current_ua" -lt 0 ]; then should_count=1; fi
-			else
-				if ! external_power_online; then should_count=1; fi
-			fi
-			if [ "$should_count" -eq 1 ]; then
-				low_count=$((low_count + 1))
-			else
-				low_count=0
-			fi
+	if valid_uint "$sustained_voltage_uv" && [ "$sustained_voltage_uv" -le "$SHUTDOWN_VOLTAGE_UV" ]; then
+		proof_discharge=0
+		no_source=0
+		if valid_int "$current_ua" && [ "$current_ua" -lt 0 ]; then proof_discharge=1; fi
+		if ! external_power_online; then no_source=1; fi
+		if [ "$proof_discharge" -eq 1 ] || [ "$no_source" -eq 1 ]; then
+			low_count=$((low_count + 1))
 		else
 			low_count=0
 		fi

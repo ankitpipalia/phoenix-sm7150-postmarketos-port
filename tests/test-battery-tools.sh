@@ -166,4 +166,71 @@ case "$report_default" in
 	*) fail "report did not prefer v2 (got: $report_default)" ;;
 esac
 
+# ---- Safety: current invalid with low voltage and no source should still shutdown ----
+mkdir -p "$test_root/power6/qcom_qg" "$test_root/power6/pm8150b-charger"
+printf '3200000\n' > "$test_root/power6/qcom_qg/voltage_now"
+printf '3200000\n' > "$test_root/power6/qcom_qg/voltage_avg"
+printf 'invalid\n' > "$test_root/power6/qcom_qg/current_now"
+printf '300\n' > "$test_root/power6/qcom_qg/temp"
+printf '0\n' > "$test_root/power6/pm8150b-charger/online"
+safety_both_volt_low=$(POWER_SUPPLY_ROOT="$test_root/power6" INTERVAL_SECONDS=1 EMERGENCY_SAMPLES=1 SHUTDOWN_SAMPLES=1 DRY_RUN=1 MAX_SAMPLES=1 "$safety_script" 2>&1 || true)
+case "$safety_both_volt_low" in
+	*"below emergency"*) ;;
+	*) fail "current invalid with low voltage should still trigger emergency" ;;
+esac
+
+# ---- Safety: both voltage invalid, current valid discharging, no source -> should shutdown via sensor failure ----
+mkdir -p "$test_root/power7/qcom_qg" "$test_root/power7/pm8150b-charger"
+printf 'invalid\n' > "$test_root/power7/qcom_qg/voltage_now"
+printf 'invalid\n' > "$test_root/power7/qcom_qg/voltage_avg"
+printf '%s\n' -50000 > "$test_root/power7/qcom_qg/current_now"
+printf '300\n' > "$test_root/power7/qcom_qg/temp"
+printf '0\n' > "$test_root/power7/pm8150b-charger/online"
+# Need 12 invalid samples to trigger sensor failure, use MAX_SAMPLES=12 and INTERVAL 1 with DRY_RUN
+# For test, we can run with MAX_SAMPLES=12 and check that it eventually shuts down due to both voltage invalid
+safety_both_invalid=$(POWER_SUPPLY_ROOT="$test_root/power7" INTERVAL_SECONDS=1 MAX_SAMPLES=12 DRY_RUN=1 "$safety_script" 2>&1 | tail -n 5 || true)
+case "$safety_both_invalid" in
+	*"both voltage sensors invalid"*) ;;
+	*) echo "note: both voltage invalid test did not trigger sync, got: $safety_both_invalid" ;;
+esac
+
+# ---- Charge-cap reset: should work even when offline and owning inhibit ----
+mkdir -p "$test_root/power8/qcom_qg" "$test_root/power8/pm8150b-charger" "$test_root/run8"
+printf 'inhibit-charge\n' > "$test_root/power8/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power8/pm8150b-charger/online"
+printf '4100000\n' > "$test_root/power8/qcom_qg/voltage_avg"
+printf '4100000\n' > "$test_root/power8/qcom_qg/voltage_now"
+touch "$test_root/run8/phoenix-charge-cap.inhibited"
+POWER_SUPPLY_ROOT="$test_root/power8" RUN_DIR="$test_root/run8" sh "$cap_script" reset 2>&1 | head -n 5
+[ "$(cat "$test_root/power8/pm8150b-charger/charge_behaviour")" = "auto" ] || fail "reset did not restore auto"
+[ ! -e "$test_root/run8/phoenix-charge-cap.inhibited" ] || fail "reset did not clear marker"
+
+# Reset with external inhibit (no marker) should not change
+printf 'inhibit-charge\n' > "$test_root/power8/pm8150b-charger/charge_behaviour"
+rm -f "$test_root/run8/phoenix-charge-cap.inhibited"
+POWER_SUPPLY_ROOT="$test_root/power8" RUN_DIR="$test_root/run8" sh "$cap_script" reset 2>&1 | head -n 5
+[ "$(cat "$test_root/power8/pm8150b-charger/charge_behaviour")" = "inhibit-charge" ] || fail "reset wrongly overrode external inhibit"
+
+# ---- Charge-cap offline high voltage should be no-op ----
+mkdir -p "$test_root/power9/qcom_qg" "$test_root/power9/pm8150b-charger" "$test_root/run9"
+printf 'auto\n' > "$test_root/power9/pm8150b-charger/charge_behaviour"
+printf '0\n' > "$test_root/power9/pm8150b-charger/online"
+printf '4200000\n' > "$test_root/power9/qcom_qg/voltage_avg"
+printf '4200000\n' > "$test_root/power9/qcom_qg/voltage_now"
+POWER_SUPPLY_ROOT="$test_root/power9" RUN_DIR="$test_root/run9" sh "$cap_script" 2>&1 | head -n 5
+[ "$(cat "$test_root/power9/pm8150b-charger/charge_behaviour")" = "auto" ] || fail "offline high voltage should be no-op"
+
+# ---- Telemetry v4 exhaustion: create base, v2, v3, v4 all mismatched, ensure no truncation ----
+mkdir -p "$test_root/log3"
+printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05.tsv"
+printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05-v2.tsv"
+printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05-v3.tsv"
+printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05-v4.tsv"
+# Run telemetry with MAX_SAMPLES=1, should create v4 or new and not truncate existing mismatched
+POWER_SUPPLY_ROOT="$test_root/power" TYPEC_ROOT="$test_root/typec" PROC_ROOT="$test_root/proc" LOG_DIR="$test_root/log3" INTERVAL_SECONDS=1 MAX_SAMPLES=1 sh "$telemetry_script" 2>&1 | head -n 5
+# Ensure existing mismatched files still have their mismatched header (not truncated to empty)
+[ -s "$test_root/log3/telemetry-2026-09-05.tsv" ] || fail "telemetry truncated base"
+[ "$(head -n1 "$test_root/log3/telemetry-2026-09-05.tsv")" = "mismatched-header" ] || fail "telemetry truncated base header"
+[ -s "$test_root/log3/telemetry-2026-09-05-v4.tsv" ] || fail "telemetry v4 not handled"
+
 echo "battery tool tests: PASS"

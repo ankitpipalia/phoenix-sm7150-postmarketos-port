@@ -4,6 +4,9 @@
 # reliable when a status or USB type contains spaces.
 set -eu
 
+for _v in INTERVAL_SECONDS LOG_DIR RETENTION_DAYS MAX_SAMPLES POWER_SUPPLY_ROOT TYPEC_ROOT PROC_ROOT; do
+	eval "_env_$_v=\${$_v-__unset__}"
+done
 INTERVAL_SECONDS=${INTERVAL_SECONDS:-5}
 LOG_DIR=${LOG_DIR:-/var/log/phoenix-battery}
 RETENTION_DAYS=${RETENTION_DAYS:-14}
@@ -12,6 +15,10 @@ POWER_SUPPLY_ROOT=${POWER_SUPPLY_ROOT:-/sys/class/power_supply}
 TYPEC_ROOT=${TYPEC_ROOT:-/sys/class/typec}
 PROC_ROOT=${PROC_ROOT:-/proc}
 [ -r /etc/phoenix-battery-telemetry.conf ] && . /etc/phoenix-battery-telemetry.conf
+for _v in INTERVAL_SECONDS LOG_DIR RETENTION_DAYS MAX_SAMPLES POWER_SUPPLY_ROOT TYPEC_ROOT PROC_ROOT; do
+	eval "_env_val=\${_env_$_v}"
+	if [ "$_env_val" != "__unset__" ]; then eval "$_v=\${_env_val}"; fi
+done
 
 case "$INTERVAL_SECONDS:$RETENTION_DAYS:$MAX_SAMPLES" in
     *[!0-9:]*|:*|*:) logger -p daemon.err -t phoenix-battery-telemetry "invalid numeric configuration"; exit 1 ;;

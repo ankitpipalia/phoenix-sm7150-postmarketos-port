@@ -204,21 +204,23 @@ for patch_path in "${patch_paths[@]}"; do
 	cp -a "$patch_path" "$kernel_dir/"
 done
 
+# Save old manifest before overwriting for correct APKBUILD cleanup (old + current)
+old_phoenix_tmp="$(mktemp)"
+if [[ -f "$phoenix_manifest" ]]; then
+	cat "$phoenix_manifest" > "$old_phoenix_tmp"
+fi
 # Refresh the manifest so the next sync run can clean up stale patches.
 printf '%s\n' "${patch_names[@]}" > "$phoenix_manifest"
 
 patch_list_file="$(mktemp)"
 sum_lines_file="$(mktemp)"
-trap 'rm -f "$patch_list_file" "$sum_lines_file"' EXIT
+trap 'rm -f "$patch_list_file" "$sum_lines_file" "$old_phoenix_tmp"' EXIT
 
 printf '%s\n' "${patch_names[@]}" > "$patch_list_file"
 # Build combined phoenix set for removal (previous + current) to avoid deleting unrelated upstream patches
 phoenix_all_file="$(mktemp)"
-if [[ -f "$phoenix_manifest" ]]; then
-	cat "$phoenix_manifest" > "$phoenix_all_file"
-fi
+cat "$old_phoenix_tmp" > "$phoenix_all_file" 2>/dev/null || true
 printf '%s\n' "${patch_names[@]}" >> "$phoenix_all_file"
-# Deduplicate
 sort -u "$phoenix_all_file" -o "$phoenix_all_file"
 
 update_source_block "$kernel_apkbuild" "$phoenix_all_file"
@@ -236,20 +238,16 @@ ensure_kernel_config_symbol "$kernel_config" "CONFIG_CHARGER_QCOM_SMB2" "m"
 config_sum="$(sha512sum "$kernel_config" | awk '{print $1}')"
 ordered_sum_lines=("$config_sum  $(basename "$kernel_config")" "${sum_lines[@]}")
 printf '%s\n' "${ordered_sum_lines[@]}" > "$sum_lines_file"
-# For sha512 removal, also use combined phoenix set plus current sums
-# Build a combined target list: current sums + previous manifest checksums (if any) - we need to map previous manifest names to checksums?
-# Simpler: still use current sums for ordering, but for removal use phoenix_all_file names
-# Update the awk to use phoenix_all_file for patch name check, but keep order from sum_lines_file
-# We will create a helper that merges previous manifest names into target for removal
-if [[ -f "$phoenix_manifest" ]]; then
+# For sha512 removal, also handle stale phoenix patches that are no longer in current
+# Append dummy checksum entries for old manifest names so update_sha512_entries will remove them
+if [[ -s "$old_phoenix_tmp" ]]; then
 	while IFS= read -r prev; do
 		[[ -z "$prev" ]] && continue
 		case "$prev" in *\/*|.*) continue;; esac
-		# If prev not already in current sums, add a dummy entry for removal tracking
 		if ! grep -q "  $prev" "$sum_lines_file" 2>/dev/null; then
-			echo "dummy  $prev" >> "$phoenix_all_file"
+			echo "dummy  $prev" >> "$sum_lines_file"
 		fi
-	done < "$phoenix_manifest"
+	done < "$old_phoenix_tmp"
 fi
 update_sha512_entries "$kernel_apkbuild" "$sum_lines_file"
 rm -f "$phoenix_all_file"
