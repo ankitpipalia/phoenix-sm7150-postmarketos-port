@@ -10,7 +10,7 @@ was compiled locally but has not yet been installed on the phone. Values below
 are observations from this test device, not guarantees for every Phoenix,
 battery, charger, cable, or USB-C hub.
 
-## Implementation and test status — September 5, 2026 (updated 2026-09-05 23:50 UTC, P0/P1 review2 fixes, r23 installed)
+## Implementation and test status — September 5, 2026 (updated 2026-09-06 00:05 UTC, review3 P0 fixes, r24 installed)
 
 | Change | Repository | Device result (live re-audit) |
 | --- | --- | --- |
@@ -29,8 +29,8 @@ battery, charger, cable, or USB-C hub.
 | Kernel 0011 upstream fixes | New patch `0011-qcom-smbx-upstream-fixes-and-robustness.patch` (watchdog base, OV notify, float off-by-one, ICL ordering/log, revalidation) | Compile-tested via `git apply --check`; not yet flashed |
 | Userspace env override | `phoenix-battery-safety.sh` + `phoenix-charge-cap.sh` now preserve env over config for testing | Device-tested 2026-09-05: env `START==STOP` correctly rejected, `EMERGENCY_SAMPLES` override works, thermal with invalid voltage fires |
 
-Live r23 upgrade preserved opt-in state and left `charge-cap`/`safety` disabled as intended. Pre-upgrade manual units and live files remain backed up under
-`/var/backups/phoenix-fix-20260904` (including `systemd-manual/` with `phoenix-eth0-autoup.*`). `r23` was installed via `apk add --allow-untrusted` at `2026-09-05 23:50 UTC` with `postmarketos-mkinitfs` regenerating `initramfs`/`BOOTAA64.EFI`/`sm7150-xiaomi-phoenix.dtb`. The battery safety service remains disabled
+Live r24 upgrade preserved opt-in state and left `charge-cap`/`safety` disabled as intended. Pre-upgrade manual units and live files remain backed up under
+`/var/backups/phoenix-fix-20260904` (including `systemd-manual/` with `phoenix-eth0-autoup.*`). `r24` was installed via `apk add --allow-untrusted` at `2026-09-06 00:05 UTC` with `postmarketos-mkinitfs` regenerating `initramfs`/`BOOTAA64.EFI`/`sm7150-xiaomi-phoenix.dtb`. The battery safety service remains disabled
 pending a controlled source-loss test. The charge-cap timer remains disabled
 until the patched kernel is installed; this intentionally prevents a fallback
 to the unsafe USB-input-suspend behavior.
@@ -112,8 +112,8 @@ Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-t
 | Charger | `pm8150b-charger online=1 status=Charging health=Good current_max=700000 current_now=694525 voltage_now=4492720` (2026-09-03 23:07) | — |
 | TCPM | `tcpm-source-psy-c440000.spmi:pmic@0:typec@1500 online=1 voltage_now=5000000 current_max=3000000 usb_type=[C] PD PD_PPS ...` (2026-09-03 23:07) | — |
 | Type-C | `port0 power_role=source [sink]` `data_role=host` `power_operation_mode=3.0A` `vconn=no` — **current role is shown in brackets, so `source [sink]` means SINK** (per `Documentation/ABI/testing/sysfs-class-typec`); at 2026-09-03 23:07 `charger online=1 Charging` `current +53mA` (valid sink with powered dock: power sink + data host, as verified in upstream SMB5 v4 `powered dock: data host + power sink`); earlier Aug 23 `source [sink]` reading, if literal, also means sink — not sourcing — so "stuck as source" is *not* supported by that `power_role` reading (deep discharge still genuine due to `charger/TCPM offline`); partner present (`port0-partner/` exists) | local port acting as a 5 V/3 A source; SMB charger offline |
-| Device package | `device-xiaomi-phoenix-1-r23` aarch64 (installed `2026-09-05 23:50` via `apk add --allow-untrusted`; `20-phoenix-optional.preset` present, `Restart=always` safety, `flock` dep, `vnow/vavg` separate) | `device-xiaomi-phoenix-1-r20` (locally built) |
-| Repository package | `device-xiaomi-phoenix-1-r23` (`pkgrel=23` in `APKBUILD:6`, `20-phoenix-optional.preset` + safety `vnow/vavg` separate + charge-cap offline/reset + report/telemetry/typec/lock) | `device-xiaomi-phoenix-1-r20` |
+| Device package | `device-xiaomi-phoenix-1-r24` aarch64 (installed `2026-09-06 00:05` via `apk add --allow-untrusted`; `20-phoenix-optional.preset` present, `Restart=always`, `vnow/vavg` separate, `flock` dep) | `device-xiaomi-phoenix-1-r20` (locally built) |
+| Repository package | `device-xiaomi-phoenix-1-r24` (`pkgrel=24` in `APKBUILD:6`, `20-phoenix-optional.preset` + safety `vnow/vavg` + `proof_discharge||!online` + typec `Discharging` removed + `sink&&online`) | `device-xiaomi-phoenix-1-r20` |
 | Containers | `phoenix-monitor Up 11 days`, `cloudflared Up ~1h` | Docker monitor and Cloudflare tunnel running |
 | Kubernetes | `phoenix 1 node Ready 91d`; `coredns-8db54c48d-fznfq 1/1`, `local-path-provisioner-5d9d9885bc-44rl9 1/1` (27m), `metrics-server-786d997795-676bp 1/1` (26m) `Running`; `kubectl top node phoenix 489m 6% 1857Mi`; `nft` `cni0 tcp dport {6443,10250}` | node Ready; all three core pods `1/1 Running` after nftables fix |
 | systemd | `system is running`, `--failed 0`; `phoenix-battery-telemetry active running` (uptime `4585s`, boot_id `76258377-...`), `adsp-disable-recovery active exited`, `wlan-mac active exited`; `phoenix-charge-cap.timer disabled` (stopped `22:37`), `safety disabled`; `qbootctl masked`; `preset` `90-phoenix-wlan-mac enable` + `20-phoenix-optional ignore` | — |
@@ -122,14 +122,14 @@ Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-t
 | Security | device `99-user-nopass.conf`/`90-user-nopass` absent (`NOT_EXISTS`); unmanaged `/etc/sudoers.d/user-nopasswd` (`NOPASSWD ALL`, `who-owns: no owner`) still gives passwordless `sudo`; `doas` requires auth (`10-postmarketos.conf` `permit persist :wheel`) | — |
 
 The running kernel was built in May 2026, before the August TCPM/SMB5 safety
-work. The r23 device package is now installed (2026-09-05 23:50) and old manual systemd unit overrides
+work. The r24 device package is now installed (2026-09-06 00:05) and old manual systemd unit overrides
 have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with `phoenix-eth0-autoup.*`); active helpers now resolve to packaged units in `/usr/lib/systemd/system` via `20-phoenix-optional.preset`, but the May kernel still lacks patches 0010+0011 (needs flash).
 
 ### Fix: eliminate device/repository drift
 
-1. Build and flash a fresh image from current `main` (now r23 + 0010+0011), or upgrade the kernel and
-   `device-xiaomi-phoenix` package together. **Live 2026-09-05 23:50:** r23 package upgraded via `apk` with `mkinitfs`; kernel still requires rebuild/flash to obtain `charge_behaviour` (0010+0011).
-2. Verify the installed package release and kernel build after boot. **Live:** `device-xiaomi-phoenix-1-r23` (`preset 20-phoenix-optional.preset` present, `Restart=always` safety, `START<STOP` +50mV + offline/reset, `flock` dep), kernel `7.1.0-rc3-sm7150 Sat May 16 21:23:28 UTC` — kernel still needs flash (device r23, kernel May).
+1. Build and flash a fresh image from current `main` (now r24 + 0010+0011), or upgrade the kernel and
+   `device-xiaomi-phoenix` package together. **Live 2026-09-06 00:05:** r24 package upgraded via `apk` with `mkinitfs`; kernel still requires rebuild/flash to obtain `charge_behaviour` (0010+0011).
+2. Verify the installed package release and kernel build after boot. **Live:** `device-xiaomi-phoenix-1-r24` (`preset 20-phoenix-optional.preset` present, `Restart=always` + `proof_discharge||!online`, `flock` dep), kernel `7.1.0-rc3-sm7150 Sat May 16 21:23:28 UTC` — kernel still needs flash (device r24, kernel May).
 3. Completed: old manual `/etc/systemd/system/phoenix-*` units and the stale
    `phoenix-eth0-autoup` units were moved to the dated backup (`/var/backups/phoenix-fix-20260904/systemd-manual/`); active helpers now resolve to packaged units in `/usr/lib/systemd/system` and `20-phoenix-optional.preset` preserves `ignore` for `charge-cap`/`safety`/`telemetry`/`screen-off`/`typec-recover`/`usb-host-wake`.
 4. Completed: `20-phoenix-optional.preset` added to fix the `preset-all` opt-in regression (without `ignore`, `systemctl preset-all` would re-enable disabled server helpers on upgrade). Verified `is-enabled: telemetry enabled, typec-recover enabled, usb-host-wake enabled, screen-off enabled, charge-cap disabled, safety disabled`.
