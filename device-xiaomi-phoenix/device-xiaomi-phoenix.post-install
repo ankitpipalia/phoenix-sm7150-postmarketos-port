@@ -14,6 +14,11 @@ ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
 # the system in a misleading degraded state.
 ln -sf /dev/null /etc/systemd/system/qbootctl.service
 
+# No Phoenix IIO sensor drivers are available yet. The statically activated
+# proxy otherwise spins for minutes, fails its shutdown timeout, and leaves the
+# boot degraded. Remove this mask when the sensor drivers are enabled.
+ln -sf /dev/null /etc/systemd/system/iio-sensor-proxy.service
+
 if command -v systemctl >/dev/null 2>&1; then
 	# Pick up the /dev/null mask above and any unit-file changes shipped
 	# by this upgrade. Without daemon-reload, masking is a no-op until
@@ -24,6 +29,12 @@ if command -v systemctl >/dev/null 2>&1; then
 	# NetworkManager (Before=) so we skip it; the unit fires at next
 	# boot. Direct invocation here would race the systemd-started copy.
 	systemctl reenable phoenix-wlan-mac.service >/dev/null 2>&1 || true
+	# This port is deployed as an SSH-managed server: no graphical greeter,
+	# panel off, and automatic recovery of an attached USB-C Ethernet dock.
+	systemctl set-default multi-user.target >/dev/null 2>&1 || true
+	systemctl disable --now greetd.service >/dev/null 2>&1 || true
+	systemctl enable --now phoenix-screen-off.service >/dev/null 2>&1 || true
+	systemctl enable phoenix-usb-host-wake.service >/dev/null 2>&1 || true
 fi
 
 # Compile dconf defaults so notification policy is active after install.

@@ -1,0 +1,68 @@
+From: Ankit Pipalia <ankit@example.com>
+Date: Sat, 5 Sep 2026 15:10:00 +0530
+Subject: [PATCH 15/15] power: supply: qcom_smbx: override APSD high current
+
+The driver programs 1.5 A for APSD DCP/CDP but immediately releases the
+software ICL override for every source except the TCPM fallback.  On PM6150B
+the programmed USBIN_CURRENT_LIMIT_CFG then remains 1.5 A while the effective
+AICL status stays at the USB default 500 mA.  Under server load the charger
+enters PAUSE_CHARGE and the battery discharges despite a capable input source.
+
+Downstream smblib uses the high-current software override when setting a
+numeric high-current ICL.  Do the same for the trusted APSD DCP and CDP cases,
+while leaving SDP and the safe default under hardware/protocol control.  Keep
+AICL and suspend-on-collapse enabled and rerun AICL only when entering or
+raising an overridden request.
+
+Signed-off-by: Ankit Pipalia <ankit@example.com>
+---
+ drivers/power/supply/qcom_smbx.c | 20 ++++++++++++--------
+ 1 file changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index 1..2 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -613,12 +613,16 @@ static int smb_apply_current_limit(struct smb_chip *chip, unsigned int current_ua,
+ 				   enum smb_icl_source source)
+ {
+-	bool fallback = source == SMB_ICL_TCPM_FALLBACK;
+-	bool was_fallback = chip->icl_source == SMB_ICL_TCPM_FALLBACK;
+-	bool rerun_aicl = fallback &&
+-		(!was_fallback || current_ua > chip->requested_icl_ua);
++	bool override = source == SMB_ICL_TCPM_FALLBACK ||
++			source == SMB_ICL_APSD_CDP ||
++			source == SMB_ICL_APSD_DCP;
++	bool was_override = chip->icl_source == SMB_ICL_TCPM_FALLBACK ||
++			    chip->icl_source == SMB_ICL_APSD_CDP ||
++			    chip->icl_source == SMB_ICL_APSD_DCP;
++	bool rerun_aicl = override &&
++		(!was_override || current_ua > chip->requested_icl_ua);
+ 	int rc;
+ 
+-	if (!fallback && was_fallback) {
++	if (!override && was_override) {
+ 		/* Downgrade: program safe limit while override still active, then release */
+ 		rc = smb_set_current_limit(chip, current_ua);
+ 		if (rc < 0)
+@@ -629,7 +633,7 @@ static int smb_apply_current_limit(struct smb_chip *chip, unsigned int current_ua,
+ 			return rc;
+ 	} else {
+-		/* Remove a previous software override before returning control to APSD. */
+-		if (!fallback) {
++		/* SDP/default stay under the protocol-selected hardware ceiling. */
++		if (!override) {
+ 			rc = smb_set_icl_override(chip, false);
+ 			if (rc < 0)
+ 				return rc;
+@@ -640,7 +644,7 @@ static int smb_apply_current_limit(struct smb_chip *chip, unsigned int current_ua,
+ 		if (rc < 0)
+ 			return rc;
+ 
+-		if (fallback) {
++		if (override) {
+ 			rc = smb_set_icl_override(chip, true);
+ 			if (rc < 0)
+ 				return rc;
+-- 
+2.51.0

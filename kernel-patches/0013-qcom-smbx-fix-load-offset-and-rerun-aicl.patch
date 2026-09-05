@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Phoenix Port <phoenix@example.com>
+Date: Sat, 5 Sep 2026 18:00:00 +0530
+Subject: [PATCH 13/13] power: supply: qcom_smbx: fix load offset and rerun AICL
+
+USBIN_LOAD_CFG is USB-input-relative register 0x365, not battery-charger
+register 0x065. Correct the offset so the high-current override is applied to
+the intended peripheral.
+
+When entering or raising the guarded TCPM fallback, rerun AICL once after the
+new programmed limit and override are installed. This prevents the 500 mA
+settled result established by the safe default from remaining stale after a
+valid higher-current PD contract is accepted. Periodic 15-second policy
+revalidation does not retrigger AICL unless the requested limit increases.
+
+Signed-off-by: Phoenix Port <phoenix@example.com>
+---
+ drivers/power/supply/qcom_smbx.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -110,7 +110,7 @@
+ #define AUTO_SRC_DETECT_BIT				BIT(3)
+ #define HVDCP_EN_BIT					BIT(2)
+ 
+-#define USBIN_LOAD_CFG					0x65
++#define USBIN_LOAD_CFG					0x365
+ #define ICL_OVERRIDE_AFTER_APSD_BIT			BIT(4)
+ 
+ #define USBIN_ICL_OPTIONS				0x366
+@@ -142,6 +142,9 @@
+ #define USBIN_CONT_AICL_THRESHOLD_CFG			0x384
+ #define USBIN_CONT_AICL_THRESHOLD_CFG_MASK		GENMASK(5, 0)
+ 
++#define AICL_CMD					0x644
++#define RERUN_AICL_BIT					BIT(0)
++
+ #define SMB2_ICL_STATUS					0x607
+ #define SMB5_AICL_ICL_STATUS				0x108
+ #define INPUT_CURRENT_LIMIT_MASK			GENMASK(7, 0)
+@@ -612,6 +615,8 @@
+ {
+ 	bool fallback = source == SMB_ICL_TCPM_FALLBACK;
+ 	bool was_fallback = chip->icl_source == SMB_ICL_TCPM_FALLBACK;
++	bool rerun_aicl = fallback &&
++		(!was_fallback || current_ua > chip->requested_icl_ua);
+ 	int rc;
+ 
+ 	if (!fallback && was_fallback) {
+@@ -641,6 +646,13 @@
+ 		}
+ 	}
+ 
++	if (rerun_aicl) {
++		rc = regmap_update_bits(chip->regmap, chip->base + AICL_CMD,
++					RERUN_AICL_BIT, RERUN_AICL_BIT);
++		if (rc < 0)
++			return rc;
++	}
++
+ 	if (chip->requested_icl_ua != current_ua || chip->icl_source != source) {
+ 		dev_info(chip->dev, "USB ICL %u uA selected from %s\n", current_ua,
+ 			 smb_icl_source_name(source));
+-- 
+2.54.0

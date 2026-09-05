@@ -1,0 +1,53 @@
+From: Ankit Pipalia <ankit@example.com>
+Date: Sat, 5 Sep 2026 15:00:00 +0530
+Subject: [PATCH 14/14] arm64: dts: qcom: phoenix: enable PS_HOLD restart
+
+Phoenix completes an orderly Linux shutdown for reboot, but the firmware PSCI
+reset path does not restart the device.  It remains unavailable until a hard
+power cycle and Type-C reattach.
+
+Qualcomm's downstream SM6150 device tree describes PS_HOLD at 0x0c264000.
+Expose that register on Phoenix so the in-tree msm-restart driver can provide a
+hardware restart path.  Run an explicitly described PS_HOLD handler before the
+generic PSCI restart notifier; if PS_HOLD is ineffective, its existing delay
+and NOTIFY_DONE return still allow the PSCI fallback to run.
+
+Signed-off-by: Ankit Pipalia <ankit@example.com>
+---
+ arch/arm64/boot/dts/qcom/sm7150-xiaomi-phoenix.dts | 7 +++++++
+ drivers/power/reset/msm-poweroff.c                  | 2 +-
+ 2 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-phoenix.dts b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-phoenix.dts
+index 1..2 100644
+--- a/arch/arm64/boot/dts/qcom/sm7150-xiaomi-phoenix.dts
++++ b/arch/arm64/boot/dts/qcom/sm7150-xiaomi-phoenix.dts
+@@ -324,6 +324,13 @@
+ 	};
+ };
+ 
++&soc {
++	restart@c264000 {
++		compatible = "qcom,pshold";
++		reg = <0x0 0x0c264000 0x0 0x4>;
++	};
++};
++
+ &gpu {
+ 	zap-shader {
+ 		firmware-name = "qcom/sm7150/phoenix/a615_zap.mbn";
+diff --git a/drivers/power/reset/msm-poweroff.c b/drivers/power/reset/msm-poweroff.c
+index 4fa4d74d9b85..a098d1ee1472 100644
+--- a/drivers/power/reset/msm-poweroff.c
++++ b/drivers/power/reset/msm-poweroff.c
+@@ -32,7 +32,7 @@ static int msm_restart_probe(struct platform_device *pdev)
+ 		return PTR_ERR(msm_ps_hold);
+ 
+ 	devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_RESTART,
+-				      128, do_msm_poweroff, NULL);
++				      130, do_msm_poweroff, NULL);
+ 
+ 	devm_register_sys_off_handler(&pdev->dev, SYS_OFF_MODE_POWER_OFF,
+ 				      SYS_OFF_PRIO_DEFAULT, do_msm_poweroff,
+-- 
+2.51.0

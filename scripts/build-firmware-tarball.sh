@@ -80,6 +80,7 @@ if [[ -n "$firmware_root" ]]; then
 		"lib/firmware/qcom/sm7150/phoenix/ipa_fws.mbn"
 		"lib/firmware/qcom/sm7150/phoenix/venus.mbn"
 		"lib/firmware/novatek_nt36672c_g7b_fw01.bin"
+		"lib/firmware/ath10k/WCN3990/hw1.0/board.bin"
 	)
 	for rel in "${required[@]}"; do
 		if [[ ! -f "$tmp_dir/$rel" ]]; then

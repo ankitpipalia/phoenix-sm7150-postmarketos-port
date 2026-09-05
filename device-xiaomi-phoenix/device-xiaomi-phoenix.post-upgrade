@@ -7,10 +7,16 @@ rm -f /etc/systemd/system/ModemManager.service.requires/msm-modem-uim-selection.
 mkdir -p /etc/systemd/system
 ln -sf /dev/null /etc/systemd/system/msm-modem-uim-selection.service
 ln -sf /dev/null /etc/systemd/system/qbootctl.service
+# Keep the unsupported IIO proxy from spinning and timing out on every boot.
+ln -sf /dev/null /etc/systemd/system/iio-sensor-proxy.service
 
 if command -v systemctl >/dev/null 2>&1; then
 	systemctl daemon-reload >/dev/null 2>&1 || true
 	systemctl reenable phoenix-wlan-mac.service >/dev/null 2>&1 || true
+	systemctl set-default multi-user.target >/dev/null 2>&1 || true
+	systemctl disable --now greetd.service >/dev/null 2>&1 || true
+	systemctl enable --now phoenix-screen-off.service >/dev/null 2>&1 || true
+	systemctl enable phoenix-usb-host-wake.service >/dev/null 2>&1 || true
 fi
 
 if command -v dconf >/dev/null 2>&1; then

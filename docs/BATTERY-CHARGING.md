@@ -23,19 +23,26 @@ capacity must be measured by integrating current over a controlled test.
 
 ## Charger driver changes
 
-Patches 0007 through 0011 add an optional TCPM power-supply reference, a guarded
-USB input-current fallback, hardened SMB5 control and upstream Fixes robustness to `qcom_smbx` (0011: watchdog base, OV recovery, float off-by-one, ICL ordering/log, revalidation).
+Patches 0007 through 0017 add an optional TCPM power-supply reference, a guarded
+USB input-current fallback, hardened SMB5 control and upstream Fixes robustness
+to `qcom_smbx` (0011: watchdog base, OV recovery, float off-by-one, ICL
+ordering/log and revalidation; 0012: explicit 5-12 V PD acceptance with 1.5 A
+and 15 W caps; 0013: corrected SMB5 override offset and AICL rerun; 0015:
+trusted DCP/CDP override; 0016: continuous 5-12 V adapter allowance; 0017:
+bounded retry after a transient offline status). Patch 0014 is the separate
+Phoenix PS_HOLD reboot fix.
 
 Normal BC1.2 APSD results remain authoritative for CDP and DCP. The driver keeps
 the 500 mA safe default unless all relevant fallback checks pass:
 
 - USB input is physically online.
 - TCPM reports the local port online, which means the local role is a sink.
-- TCPM reports Type-C/PD at approximately 5 V (4.75 to 5.5 V).
+- Plain Type-C is approximately 5 V (4.75 to 5.5 V); an explicit PD contract
+  may be 5-12 V, matching the connector sink PDO.
 - The advertised current is at least 1.5 A.
 - Charger health is `Good`.
-- The request is capped to the smallest of TCPM current, 1.5 A and the hardware
-  maximum.
+- The request is capped to the smallest of TCPM current, 1.5 A, 15 W and the
+  hardware maximum.
 
 If APSD has completed as SDP, only a negotiated PD contract may supersede the
 500 mA SDP ceiling. A plain Type-C advertisement cannot override a completed
@@ -62,8 +69,18 @@ The driver patches also:
 - expose standard `charge_behaviour=auto|inhibit-charge` without suspending the
   USB input path.
 
-It does not enable QC/PD voltage escalation, SMB1390, a charge pump, 3 A input or
-Xiaomi's downstream 5.5 A fast-charge configuration.
+It does not itself request QC/PD voltage escalation, enable SMB1390 or a charge
+pump, allow 3 A input, or use Xiaomi's downstream 5.5 A fast-charge
+configuration. It only accepts an already negotiated TCPM PD contract within
+the connector's declared limits.
+
+On the September 5 dock test, firmware's discrete adapter allowance (`0x07`)
+classified the dock's measured ~8.9 V passthrough as `USBIN_OV` and paused
+charging. Patch 0016 programs the continuous 5-12 V allowance (`0x0c`). Live
+module testing cleared `USBIN_OV`, changed the charger to full-on charging and
+made battery current positive. The 1.5 A ceiling, hardware AICL, and
+suspend-on-collapse remained enabled; AICL is still free to settle lower when
+the dock/cable path or system load requires it.
 
 ## Live result: 2026-08-21
 

@@ -1,0 +1,46 @@
+From: Ankit Pipalia <ankit@example.com>
+Date: Sat, 5 Sep 2026 15:55:00 +0530
+Subject: [PATCH 16/16] power: supply: qcom_smbx: allow continuous 5-12 V input
+
+Phoenix advertises and validates a 4.75-12 V TCPM input range, but the SMB5
+adapter allowance is inherited from firmware.  Some powered Type-C docks leave
+it in the discrete 5 V or 9-12 V mode.  A measured 8.9 V passthrough supply can
+then assert USBIN_OV and pause charging even though it is inside the platform's
+declared safe range.
+
+Program the SMB5 continuous 5-12 V adapter allowance during charger probe.
+This does not request a higher source voltage or bypass AICL; it only aligns the
+PMIC input-valid window with the already enforced platform range.
+
+Signed-off-by: Ankit Pipalia <ankit@example.com>
+---
+ drivers/power/supply/qcom_smbx.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+index 2..3 100644
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -108,6 +108,10 @@
+ #define AUTO_SRC_DETECT_BIT				BIT(3)
+ #define HVDCP_EN_BIT					BIT(2)
+ 
++#define USBIN_ADAPTER_ALLOW_CFG				0x360
++#define USBIN_ADAPTER_ALLOW_MASK			GENMASK(3, 0)
++#define USBIN_ADAPTER_ALLOW_5V_TO_12V			0x0c
++
+ #define USBIN_LOAD_CFG					0x365
+ #define ICL_OVERRIDE_AFTER_APSD_BIT			BIT(4)
+ 
+@@ -1177,6 +1181,9 @@ static const struct smb_init_register smb5_init_seq[] = {
+ 	{ .addr = CHARGING_ENABLE_CMD,
+ 	  .mask = CHARGING_ENABLE_CMD_BIT,
+ 	  .val = CHARGING_ENABLE_CMD_BIT },
++	{ .addr = USBIN_ADAPTER_ALLOW_CFG,
++	  .mask = USBIN_ADAPTER_ALLOW_MASK,
++	  .val = USBIN_ADAPTER_ALLOW_5V_TO_12V },
+ 	/* Enable BC1P2 auto Src detect */
+ 	{ .addr = USBIN_OPTIONS_1_CFG,
+ 	  .mask = AUTO_SRC_DETECT_BIT,
+-- 
+2.51.0

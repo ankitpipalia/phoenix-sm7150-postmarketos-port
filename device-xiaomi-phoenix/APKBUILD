@@ -3,7 +3,7 @@ maintainer="Ankit Pipalia <ankit@example.com>"
 pkgname=device-xiaomi-phoenix
 pkgdesc="Xiaomi POCO X2 / Redmi K30 4G"
 pkgver=1
-pkgrel=25
+pkgrel=27
 url="https://postmarketos.org"
 license="MIT"
 arch="aarch64"
@@ -21,6 +21,8 @@ depends="
 	bluez
 	polkit-elogind
 	postmarketos-base
+	rmtfs
+	rmtfs-systemd
 	soc-qcom
 	systemd-boot
 	unl0kr-fbforcerefresh
@@ -111,6 +113,12 @@ package() {
 	install -Dm644 "$srcdir"/20-phoenix-optional.preset \
 		"$pkgdir"/usr/lib/systemd/system-preset/20-phoenix-optional.preset
 
+	# This project targets an SSH-managed phone-as-server installation.  Boot
+	# directly to the CLI target even when a graphical UI package is present.
+	mkdir -p "$pkgdir"/etc/systemd/system
+	ln -sf /usr/lib/systemd/system/multi-user.target \
+		"$pkgdir"/etc/systemd/system/default.target
+
 	# Phoenix's ADSP firmware's sensor_process PD fails SNS_REG_INIT every
 	# ~4s, and the default qcom_q6v5_pas recovery=enabled policy restarts the
 	# whole ADSP on each crash -- ~11 crashes/min, ~20°C of extra package
@@ -158,8 +166,7 @@ package() {
 	install -Dm644 "$srcdir"/phoenix-battery-safety.conf \
 		"$pkgdir"/etc/phoenix-battery-safety.conf
 
-	# Panel blanker for headless / multi-user.target installs.
-	# Enable: `systemctl enable --now phoenix-screen-off.service`
+	# Panel blanker for the default headless / multi-user.target install.
 	install -Dm644 "$srcdir"/phoenix-screen-off.service \
 		"$pkgdir"/usr/lib/systemd/system/phoenix-screen-off.service
 
@@ -180,7 +187,6 @@ package() {
 	# Self-heals the case where a Type-C hub is attached at power-on,
 	# so qcom-pmic-typec never fires an attach event and xhci-hcd never
 	# probes. Required for unattended recovery after a power outage.
-	# Enable: `systemctl enable phoenix-usb-host-wake.service`
 	install -Dm755 "$srcdir"/phoenix-usb-host-wake.sh \
 		"$pkgdir"/usr/libexec/phoenix-usb-host-wake.sh
 	install -Dm644 "$srcdir"/phoenix-usb-host-wake.service \
@@ -212,7 +218,7 @@ nonfree_firmware() {
 sha512sums="
 abdce4edc62396ce7feb869e8a51be31895b176d8a680532d0e8e481b63116c4316b6452c122e70f89115014fa84178603b15f97e336839a49653e441dde7f7a  00-phoenix-notification-policy
 4ec412372522e996ae83d61e3bce130a44c0c26f33ee6456178f82b2e2ee2bd9fa699ae51ab0be9970403f558b8ab9b378a2a81978a7bca7014df12fb3dcf662  00-phoenix-notification-policy.lock
-e5ff20d16a0925e5033780f44e154663ba713d134f8d98740920fff096e46d94b7e18cfb85cf6b7a221b59e29c1d5a78dca8610a3babbe30070e7169692c8712  20-phoenix-optional.preset
+087825e78d24f6a24560a215b44f2aac3b283a6a6d781f9dc42aa83e0d7c6c143314e6b80fb1cf29c92c579f837ca0fd73ac83d705df09f88b9d3c992358d46e  20-phoenix-optional.preset
 d1506befc564e12f7a8128e3ecfed456cb0be91c1ceca6aa5fd43bf65cd54e422a41a9289f83b4b8907fbf324addd505ef072acf7ad542ad5214d77d1c7b0358  52_phoenix_eth_trust.nft
 1699fb946b5cd237056fc9be47c3d1917c8fe8dfdf7884d665dea8e24cf45983fe9c781480617a3c8411b83d702c7eb849fb69bdfe2b3eec04a21ef04d3ce47a  90-phoenix-mac.conf
 faba3f40aa7a9a936bfe6aa5b422de6d38f2694a38e42fa30a6168ed7f2747202483df4ad2bf6e8f9a264336a95e95ab62a410fcf027e3c174ead7ec613c28e0  90-phoenix-wlan-mac.preset
@@ -220,8 +226,8 @@ fe6395a33444a31fe4dae0200d3c94d3e9ab62dae3069130bfaa9f8ed5f333309a6346df91184ced
 24aa78ee30672628df4cf8acb48dac3411a8baa4ab0e32d5dc308adecbd82bbe3012e024b4b20c9f6f569817f588f33040d5969ad7a09e3ab69991d0262199df  dconf-profile-user
 50c78d077a2540ba697c4bfffb23e9d4fc604f71b26507341db19afa99409719b2360a7879bbbb03239245bed4c2182ccd42930c812be0fc6f8c79d8364baf1e  phoenix-wlan-mac.service
 d56f811aa49b89246006356f63e4f2e3de3d9f9b397a20bcc36dee0c0621b191c5ffc58b80c8bea80055dd625c8541d772efb0581ca47eb319e2965ddc35492c  phoenix-wlan-mac.sh
-cd1542e51f5c6aeaa815c26a2b57ae23e849adae02d194accb8d499519768c00f625438c850b18a31d14dc7c45cfe751c0997cc95fed37092526c11a7160d605  device-xiaomi-phoenix.post-install
-f7bf95e3cd736df27ae8cf308fdb2bcab3d3efe0fb68ca56f30fecf444e35eb9c5882b59ee4459ca850c3f873764a7ee3b2140985ab5695b6e2a2de91f152ee1  device-xiaomi-phoenix.post-upgrade
+93381abd02c446cff42a26158d8a0a8ffaa13a955e046c57c6a8e1f9dcc15390b945075879759ffd362563908aaafc21e4bab05712dfa3be53c8e9d492dcc075  device-xiaomi-phoenix.post-install
+c152846a78e91162729ba65fb7b138f06998a9a8b1e62e8c85d7b788fb7afb2a9108b1fbeebeb54f321adc82c8c0015e46369be322868b2d792a311b9e48718d  device-xiaomi-phoenix.post-upgrade
 038da30192c12a9d0aad77c64ce7662b5596efe336296cec5083a23f35257f767d91d41267eab33f415342da049c18dc7200625a2a8f3577020cdb06bd2f7037  deviceinfo
 0b94aae89479b0d684b1a0e6c498763afa623f11a89ebe96bda2db1ead36c71a3a93a25131eca8bbc51341fe3ff261c7101960e814d9c05cd553287387e6dee0  hexagonrpcd.confd
 f0304347e4b8018b1d3731df4daa2da91b2e3b76ca39e107b3ed2efaaccfa924445868aaf026de14c6808cc56959a486c2062ca2efa5b6f5f2ccbdc9c4919113  modules-initfs

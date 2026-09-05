@@ -1,0 +1,95 @@
+From: Ankit Pipalia <ankit@example.com>
+Date: Sun, 6 Sep 2026 01:50:00 +0530
+Subject: [PATCH 17/17] power: supply: qcom_smbx: retry transient offline status
+
+The charger power-path status can briefly read offline while qcom_smbx probes
+or is reloaded with an attached Type-C dock.  The driver correctly falls back
+to 500 mA, but the safe-default state has no periodic revalidation and can
+remain there until a later TCPM notification.
+
+Retry an offline or failed status read up to four times at 15 second intervals.
+Reset the counter as soon as USB input becomes valid.  The bounded retry avoids
+waking a genuinely unplugged system indefinitely while allowing a settling
+power path to restore its validated policy automatically.
+
+Signed-off-by: Ankit Pipalia <ankit@example.com>
+---
+ drivers/power/supply/qcom_smbx.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_smbx.c b/drivers/power/supply/qcom_smbx.c
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -217,6 +217,8 @@
+ #define TCPM_FALLBACK_MAX_TYPEC_VOLTAGE_UV		5500000
+ #define TCPM_FALLBACK_MAX_PD_VOLTAGE_UV		12000000
+ #define TCPM_FALLBACK_MAX_POWER_UW			15000000
++#define SMB_OFFLINE_REVALIDATE_MS			15000
++#define SMB_OFFLINE_REVALIDATE_MAX			4
+ /* clang-format on */
+ 
+ enum smb2_charger_status {
+@@ -275,6 +277,7 @@
+  * @icl_source:		Source used to select the requested USB input limit
+  * @requested_icl_ua:	Last USB input limit requested by this driver
+  * @apsd_pending_logged: Whether unresolved APSD was logged this connection
++ * @offline_retries:	Bounded retries after an offline/error observation
+  * @psy_nb:		Notifier for TCPM capability changes
+  */
+ struct smb_chip {
+@@ -299,6 +302,7 @@
+ 	enum smb_icl_source icl_source;
+ 	unsigned int requested_icl_ua;
+ 	bool apsd_pending_logged;
++	unsigned int offline_retries;
+ 	struct notifier_block psy_nb;
+ };
+ 
+@@ -753,14 +757,24 @@
+ 	enum smb_icl_source source;
+ 	int usb_online = 0;
+ 	int count, fallback_rc, rc;
++	bool retry_offline = false;
+ 	struct smb_chip *chip;
+ 
+ 	chip = container_of(work, struct smb_chip, status_change_work.work);
+ 
+ 	rc = smb_get_prop_usb_online(chip, &usb_online);
+-	if (rc < 0)
++	if (rc < 0) {
++		if (chip->offline_retries < SMB_OFFLINE_REVALIDATE_MAX) {
++			chip->offline_retries++;
++			retry_offline = true;
++		}
+ 		goto out_revalidate;
++	}
+ 	if (!usb_online) {
++		if (chip->offline_retries < SMB_OFFLINE_REVALIDATE_MAX) {
++			chip->offline_retries++;
++			retry_offline = true;
++		}
+ 		chip->apsd_pending_logged = false;
+ 		rc = smb_apply_current_limit(chip, SDP_CURRENT_UA,
+ 					     SMB_ICL_DEFAULT);
+@@ -768,6 +782,7 @@
+ 			dev_err(chip->dev, "Failed to restore default ICL: %d\n", rc);
+ 		goto out_revalidate;
+ 	}
++	chip->offline_retries = 0;
+ 
+ 	for (count = 0; count < 3; count++) {
+ 		dev_dbg(chip->dev, "get charger type retry %d\n", count);
+@@ -857,9 +872,9 @@
+ 		dev_err(chip->dev, "Failed to apply APSD ICL: %d\n", rc);
+ 	power_supply_changed(chip->chg_psy);
+ out_revalidate:
+-	if (chip->icl_source == SMB_ICL_TCPM_FALLBACK)
++	if (chip->icl_source == SMB_ICL_TCPM_FALLBACK || retry_offline)
+ 		mod_delayed_work(system_wq, &chip->status_change_work,
+-				 msecs_to_jiffies(15000));
++				 msecs_to_jiffies(SMB_OFFLINE_REVALIDATE_MS));
+ }
+ 
+ static int smb_psy_notifier_call(struct notifier_block *nb,
+-- 
+2.51.0

@@ -1,18 +1,160 @@
 # Phoenix postmarketOS findings and fixes
 
 This document consolidates the repository review, the live audit of the Phoenix
-device at `192.168.1.101`, and the battery/charging safety review performed on
+device initially at `192.168.1.101` and later at `192.168.1.117`, and the battery/charging safety review performed on
 the `feat/phoenix-battery-charging-safety` work before it was merged to `main`.
 
 The initial inspection was read-only. On September 4, 2026, the safe userspace
-and firewall fixes were then staged and tested on the device. On September 5,
-2026, patches 0010+0011 and the r25 userspace package were built into a complete
-postmarketOS image in an ARM64 Docker Desktop Linux VM. That image has not yet
-been installed on the phone. Values below are observations from this test
-device, not guarantees for every Phoenix, battery, charger, cable, or USB-C
-hub.
+and firewall fixes were staged and tested on the device. On September 5, 2026,
+patches 0010+0011 and the r25 userspace package were built into a complete
+postmarketOS image in an ARM64 Docker Desktop Linux VM and flashed successfully.
+The post-flash results and the subsequent r26/r5/patch-0012 work are recorded
+first below; older audit sections remain as chronology and may describe a
+superseded state. Values are observations from this test device, not guarantees
+for every Phoenix, battery, charger, cable, or USB-C hub.
 
 ## Implementation and test status — September 5, 2026
+
+### Live headless-server and dock-charging validation — September 5–6, 2026
+
+The device is now configured and verified as an SSH-managed headless server.
+Its default boot target is `multi-user.target`, `greetd` is stopped and
+disabled, and `phoenix-screen-off.service` is enabled. Live sysfs verification
+showed backlight brightness `0` and panel power `0`, while `sshd` remained
+active, `eth0` remained up at `192.168.1.117`, charging continued, and
+`systemctl --failed` was empty. Device package r27 makes those choices the ROM
+defaults; the GUI packages may remain installed but are not started.
+
+The cold-boot dock recovery is also hardware-verified. On the current boot,
+`phoenix-usb-host-wake.service` waited 45 seconds, found `eth0` absent, toggled
+the DWC3 role switch, and logged that Ethernet appeared two seconds later. The
+next image enables this service by default so an already-attached dock no
+longer requires a physical replug after boot.
+
+The apparent failure to charge during the following ten-hour interval was not
+a charger fault: the user confirmed that neither the charger nor the Type-C
+dock was connected during that period. Once reconnected, TCPM established an
+explicit 9 V / 2.45 A PD contract and charging resumed. A temporary
+`phoenix-charge-to-full` monitor now keeps CPU frequency control on `schedutil`
+to reduce idle load and restores `performance` automatically when the
+voltage-derived capacity reaches 100% or the charger reports `Full`.
+
+Additional live SMB5 investigation produced and validated patches 0013–0017:
+
+- 0013 corrects `USBIN_LOAD_CFG` from the wrong `0x65` offset to SMB5's
+  `0x365` offset and reruns AICL when entering or increasing a software
+  override;
+- 0014 adds Phoenix's Qualcomm PS_HOLD restart device and orders the
+  `msm-poweroff` restart handler ahead of PSCI. The handler binds on hardware;
+  a complete unattended restart still needs a long-duration test because
+  modem/GLINK shutdown timeouts delay the final restart by several minutes;
+- 0015 applies the high-current software override to trusted APSD CDP/DCP
+  sources as well as the guarded TCPM fallback. Live register `0x1365` changed
+  from `0xa5` to `0xb5`, proving the override bit was applied;
+- 0016 programs the documented continuous 5–12 V SMB5 adapter allowance. The
+  dock supplied about 8.9 V while firmware's discrete allowance asserted
+  `USBIN_OV`. With 0016, register `0x1360` became `0x0c`, `USBIN_OV` cleared,
+  charge state changed from `PAUSE_CHARGE` to full-on charging, and battery
+  current became positive without disabling AICL or raising the 1.5 A policy
+  ceiling;
+- 0017 adds four bounded 15-second rechecks after a transient offline/error
+  power-path reading. This fixes the observed case where a live module/package
+  replacement selected the 500 mA safe default before the attached dock had
+  settled and then waited hours for another TCPM notification. A genuinely
+  unplugged phone is not polled indefinitely.
+
+The complete 0012–0017 kernel package was built successfully and installed on
+the device. The installed `qcom_smbx.ko.zst` SHA-256 is
+`20e4a851f55c87c8e7ae443da289f2eb2185a39aff3e92ed7b49ac8ea890736b`.
+Temperature during the live 9 V test remained normal (roughly 31–36 C). AICL
+may settle below the programmed 1.5 A ceiling when the hub/cable path or system
+load requires it; this is expected protection behavior and must not be bypassed.
+Patch 0017 compiled and loaded cleanly; the final re-probe immediately selected
+the 1.5 A TCPM policy, so its bounded retry path was not artificially forced.
+
+The matching headless r27 ROM was then built successfully:
+
+```text
+/Users/ankitpipalia/Git/phoenix-sm7150-postmarketos-port/artifacts/xiaomi-phoenix-20260906-r27-headless.img
+size:   3,897,556,992 bytes
+sha256: ae782df0389895f83a064e6f1e460dd3c8989cdd0fb9c1225f3d9546e7ed4e31
+```
+
+The image uses 4096-byte logical sectors. Both primary and backup GPT headers
+are present at the correct locations. Read-only `fsck.fat -n` found 23 files
+and no errors; `e2fsck -fn` completed all five passes cleanly. Read-only mounted
+inspection confirmed device package `1-r27`, the final kernel module hash,
+`default.target -> multi-user.target`, `greetd` disabled by preset, and enabled
+`phoenix-screen-off` and `phoenix-usb-host-wake` wants links. This image has not
+been flashed yet.
+
+### Post-flash hardware validation and follow-up fixes
+
+The r25 image boots the intended Xiaomi POCO X2 device tree on
+`7.1.0-rc3-sm7150` (build timestamp September 5, 2026). The expanded 106.6 GiB
+root filesystem is clean, the system reached the running state with no failed
+units, and the standard SMB5 `charge_behaviour` control works on hardware.
+Writing `inhibit-charge` changed charger status to `Not charging` while the USB
+input remained online; writing `auto` restored normal behavior. This validates
+the central architectural fix in patch 0010: charge inhibition no longer
+disconnects external system power.
+
+The currently attached Type-C dock and Apple PD supply negotiated an explicit
+9 V, 2.45 A PD contract (about 22 W capability), but qcom_smbx retained its
+500 mA safe-default ICL. This was not evidence of a weak charger or a nominal
+100 W dock-path problem. It exposed an internal policy contradiction: the
+Phoenix connector advertises a 5-12 V, 15 W sink, while the guarded fallback
+accepted only 4.75-5.5 V. New patch 0012 keeps non-PD Type-C restricted to the
+5 V range, accepts only explicit PD contracts up to the advertised 12 V, and
+caps the request to the minimum of source capability, 1.5 A, hardware maximum,
+and 15 W. At the observed 9 V contract the requested ceiling remains 1.5 A;
+at 12 V the 15 W cap reduces it to 1.25 A. Hardware AICL and
+suspend-on-collapse remain enabled. Patch 0012 applies cleanly and the complete
+kernel package compiles and verifies, but its 9 V behavior still requires the
+planned reversible module test and subsequent flash.
+
+Wi-Fi did not initially create `wlan0`. The live device had the required
+`qcom,snoc-host-cap-8bit-quirk`, but lacked the `rmtfs` service and had only a
+Davinci entry in `board-2.bin`; its actual QMI identity was chip `0x30214`,
+board `0xff`. Installing and enabling `rmtfs`, retaining patch 0006's non-fatal
+host-capability handling, and supplying Xiaomi Phoenix's stock
+`NON-HLOS.bin:/image/bdwlan.bin` allowed initialization to pass the board-file
+lookup. The packaged blob is 19,152 bytes with SHA-256
+`b740afea00b3b6c63049c599b80dd9bd50306b1c63708c9636a80908e4a2a667`.
+Repeated driver rebinding then returned QMI error 90
+(`QMI_ERR_INCOMPATIBLE_STATE`) at MSA info, which is consistent with retrying
+that one-time handshake after firmware state had already advanced; it is not a
+sound reason to ignore the error in the driver. A clean-boot WLAN result remains
+pending because the already-attached dock did not re-enumerate Ethernet after
+the software reboot. The r26 device package now depends on `rmtfs` and
+`rmtfs-systemd`; the r5 firmware builder requires and packages the exact Phoenix
+`board.bin`. `pd-mapper` is deliberately not added: it found no PD maps and
+crash-looped during the live experiment.
+
+The dock's HDMI output remains unsupported in this configuration. The Type-C
+class exposed no alternate modes, USB enumerated only the dock's USB 2.0 hub and
+Ethernet function, and DRM exposed no external DP/HDMI connector. Passive dock
+HDMI requires DisplayPort Alt Mode; dock power rating and PD passthrough do not
+create that display path. The SoC can support optional USB-C DisplayPort, but
+Phoenix board wiring and a complete Type-C/DRM alt-mode description are still
+unverified, so no speculative HDMI DT change has been made.
+
+The installed disk is usable but reports that its backup GPT header remains at
+the original image boundary after rootfs expansion. The filesystem itself is
+clean. Repair must back up the current table and move only the secondary GPT
+header to the physical end of `/dev/loop0`, followed by `sgdisk -v`; this live
+maintenance remains pending device reconnection.
+
+The updated kernel, firmware, and device APKs all built successfully in the
+existing ARM64 Docker builder. Package inspection confirms that firmware r5
+contains the exact board calibration and device r26 declares both rmtfs
+dependencies. Repository battery and synchronization tests pass. A fresh
+combined image was then installed end-to-end and exported as
+`/Users/ankitpipalia/Git/artifacts/xiaomi-phoenix-20260905-r26.img`
+(3,897,556,992 bytes; SHA-256
+`5a7264dea5aac5c6b35a36d32e552d3775aa9989d1a0e794bbcaad31e03dc248`).
+Read-only `fsck.fat -n` reports 23 files with no error, and `e2fsck -fn`
+completed all five passes cleanly. This r26 image has not yet been flashed.
 
 ### Read-only repository and connectivity audit — 2026-09-05 01:44 IST
 
@@ -1046,6 +1188,8 @@ Do not call GPU acceleration working until all of these are recorded:
 | Test | Required result |
 | --- | --- |
 | Normal 5 V Type-C source >=1.5 A | requested ICL <=1.5 A |
+| Explicit 9 V PD through powered dock | requested ICL <=1.5 A and <=15 W; USB input remains online |
+| Explicit 12 V PD | requested ICL <=1.25 A (15 W ceiling) |
 | Weak 5 V source | AICL lowers effective current without instability |
 | SDP USB port | 500 mA ceiling |
 | SDP plus valid PD contract | <=1.5 A |
@@ -1100,11 +1244,12 @@ voltage remained at or below 4.130 V and recorded temperature remained within
 behavior. The configured 1.5 A ceiling is conservative.
 
 The data does not validate over-voltage or thermal cutoff behavior because those
-conditions were not approached. Patches 0010+0011 correct Linux's SMB5 over-voltage (0010 status2, 0011 watchdog/OV/float/ICL robustness)
-register, but the live device still runs the old kernel. Continue using the
-battery with monitoring, keep the unsafe legacy charge timer disabled, and
-complete the patched-kernel hardware matrix before treating the device as a
-finished unattended always-powered server.
+conditions were not approached. The live device now runs patches 0010+0011,
+including the SMB5 status-2 over-voltage selection and watchdog/OV/float/ICL
+robustness, and true charge inhibition has passed its basic hardware test.
+Synthetic OV/thermal tests, low-voltage shutdown validation, source-transition
+tests, and the newly compiled patch-0012 9 V PD test remain required before
+treating the device as a finished unattended always-powered server.
 
 ## External references (updated 2026-09-05)
 

@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Phoenix Port <phoenix@example.com>
+Date: Sat, 5 Sep 2026 16:00:00 +0530
+Subject: [PATCH 12/12] power: supply: qcom_smbx: accept negotiated PD sink voltage
+
+The Phoenix connector advertises a 5-12 V, 15 W sink capability, but the
+guarded TCPM fallback rejected every contract above 5.5 V. Powered docks can
+therefore negotiate a valid 9 V PD contract while qcom_smbx remains at the
+500 mA safe default.
+
+Keep plain Type-C limited to approximately 5 V. Allow only explicit PD
+contracts through 12 V and cap the requested input to both 1.5 A and 15 W.
+Hardware AICL and suspend-on-collapse remain active.
+
+Signed-off-by: Phoenix Port <phoenix@example.com>
+---
+ drivers/power/supply/qcom_smbx.c | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -13,6 +13,7 @@
+ #include <linux/iio/consumer.h>
+ #include <linux/interrupt.h>
+ #include <linux/kernel.h>
++#include <linux/math64.h>
+ #include <linux/minmax.h>
+ #include <linux/module.h>
+ #include <linux/platform_device.h>
+@@ -206,7 +207,9 @@
+ #define CURRENT_MAX_UA					DCP_CURRENT_UA
+ #define TCPM_FALLBACK_CURRENT_UA			1500000
+ #define TCPM_FALLBACK_MIN_VOLTAGE_UV			4750000
+-#define TCPM_FALLBACK_MAX_VOLTAGE_UV			5500000
++#define TCPM_FALLBACK_MAX_TYPEC_VOLTAGE_UV		5500000
++#define TCPM_FALLBACK_MAX_PD_VOLTAGE_UV		12000000
++#define TCPM_FALLBACK_MAX_POWER_UW			15000000
+ /* clang-format on */
+ 
+ enum smb2_charger_status {
+@@ -650,8 +653,9 @@
+ 
+ /*
+  * TCPM only reports ONLINE while this port is consuming VBUS, so ONLINE also
+- * proves that the local Type-C role is sink. Restrict the fallback to a fixed
+- * approximately-5 V contract that explicitly grants at least 1.5 A. AICL and
++ * proves that the local Type-C role is sink. Plain Type-C remains restricted
++ * to approximately 5 V. An explicit PD contract may use the connector's
++ * advertised 5-12 V sink range, with input power capped at 15 W. AICL and
+  * suspend-on-collapse remain enabled in hardware and may reduce the effective
+  * current below this requested ceiling.
+  */
+@@ -660,6 +664,7 @@
+ 				       bool require_pd)
+ {
+ 	union power_supply_propval online, voltage, current_max, usb_type;
++	unsigned int max_voltage_uv, max_power_current_ua;
+ 	int health, rc;
+ 
+ 	if (!chip->tcpm_psy)
+@@ -679,11 +684,13 @@
+ 	case POWER_SUPPLY_USB_TYPE_C:
+ 		if (require_pd)
+ 			return -EPROTONOSUPPORT;
++		max_voltage_uv = TCPM_FALLBACK_MAX_TYPEC_VOLTAGE_UV;
+ 		break;
+ 	case POWER_SUPPLY_USB_TYPE_PD:
+ 	case POWER_SUPPLY_USB_TYPE_PD_PPS:
+ 	case POWER_SUPPLY_USB_TYPE_PD_SPR_AVS:
+ 	case POWER_SUPPLY_USB_TYPE_PD_PPS_SPR_AVS:
++		max_voltage_uv = TCPM_FALLBACK_MAX_PD_VOLTAGE_UV;
+ 		break;
+ 	default:
+ 		return -EPROTONOSUPPORT;
+@@ -694,7 +701,7 @@
+ 	if (rc < 0)
+ 		return rc;
+ 	if (voltage.intval < TCPM_FALLBACK_MIN_VOLTAGE_UV ||
+-	    voltage.intval > TCPM_FALLBACK_MAX_VOLTAGE_UV)
++	    voltage.intval > max_voltage_uv)
+ 		return -ERANGE;
+ 
+ 	rc = power_supply_get_property(chip->tcpm_psy,
+@@ -710,8 +717,11 @@
+ 	if (health != POWER_SUPPLY_HEALTH_GOOD)
+ 		return -EHOSTDOWN;
+ 
++	max_power_current_ua = div_u64((u64)TCPM_FALLBACK_MAX_POWER_UW *
++					1000000, voltage.intval);
+ 	*current_ua = min_t(unsigned int, current_max.intval,
+ 			    TCPM_FALLBACK_CURRENT_UA);
++	*current_ua = min(*current_ua, max_power_current_ua);
+ 	*current_ua = min(*current_ua, chip->current_limit_max_ua);
+ 
+ 	return 0;
+-- 
+2.54.0

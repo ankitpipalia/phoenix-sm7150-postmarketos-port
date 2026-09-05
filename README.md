@@ -1,6 +1,8 @@
 # postmarketOS port for Xiaomi POCO X2 / Redmi K30 4G (phoenix)
 
-> **Status: Working** — boots to phosh UI, WiFi, USB networking, display, touchscreen functional.
+> **Status: Working server build** — boots headless to `multi-user.target` with
+> SSH, Ethernet/Wi-Fi support and the internal panel disabled. Display and
+> touchscreen support remain packaged but the graphical greeter is disabled.
 
 This repository contains the pmaports packages and kernel patches needed to run [postmarketOS](https://postmarketos.org) on the **Xiaomi POCO X2** (Indian market) / **Xiaomi Redmi K30 4G** (Global), codename **phoenix**, powered by the Qualcomm Snapdragon 730G (SM7150-AB).
 
@@ -31,20 +33,21 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 | Display | ✅ Working |
 | Touchscreen | ✅ Working |
 | USB networking (RNDIS) | ✅ Working |
-| WiFi | ✅ Working |
+| WiFi | ⚠️ Stock Phoenix calibration and `rmtfs` are now packaged; clean-boot hardware validation pending |
 | Bluetooth | ✅ Working (adapter up, scanning works) |
 | Root access for default user | ✅ Working through authenticated `doas`/`sudo`; the package does not grant general passwordless root |
 | Screen wake behavior | ✅ Working (notification/task-complete wakeups disabled by dconf policy; power button wake only) |
+| Headless server mode | ✅ Default: `multi-user.target`, `greetd` disabled, panel backlight off, SSH retained |
 | Audio | ❌ Not working (ADSP sensor PD crash, q6asm-dai probe fails) |
 | Camera | ❌ Not working |
 | Modem / calls | ⚠️ Remoteproc running, untested |
 | GPS | 🔧 Untested |
 | Sensors | ❌ Not working (missing sensor PD firmware) |
-| Battery / charging | ⚠️ PM6150 charging works. A guarded TCPM fallback permits at most 1.5 A at ~5 V when APSD is unresolved; a completed SDP result can be superseded only by an explicit PD contract. AICL remains enabled and disconnect/capability loss restores the safe 500 mA default. The mainline QGauge percentage remains a voltage-derived estimate, not learned SOC. See [battery and charging notes](docs/BATTERY-CHARGING.md) |
+| Battery / charging | ⚠️ PM6150 charging works. A guarded TCPM fallback permits plain Type-C only near 5 V and explicit PD through the advertised 12 V range, capped at 1.5 A and 15 W. AICL remains enabled and disconnect/capability loss restores the safe 500 mA default. True charge inhibition passed its basic device test. The mainline QGauge percentage remains a voltage-derived estimate, not learned SOC. See [battery and charging notes](docs/BATTERY-CHARGING.md) |
 | GPU / 3D acceleration | ⚠️ DRI device present (card0, renderD128), untested |
 | SD card | 🔧 Untested |
 | NFC | ⚠️ nfc0 detected, untested |
-| USB-C hub ethernet | ⚠️ Works, but drops when charger/USB added to hub (see Troubleshooting) |
+| USB-C hub ethernet | ✅ Works; the boot recovery service re-enumerates an already-attached dock automatically |
 
 ---
 
@@ -80,7 +83,13 @@ If you are starting from a completely fresh Linux host and a stock MIUI phone in
 │   ├── 0008-power-supply-qcom_smbx-add-guarded-TCPM-ICL-fallback.patch # safe 1.5 A fallback with AICL
 │   ├── 0009-arm64-dts-qcom-sm7150-xiaomi-wire-charger-to-TCPM.patch # connect PM6150 charger to TCPM
 │   ├── 0010-qcom-smbx-harden-smb5-charging-policy.patch # true charge inhibition, SMB5 corrections and TCPM revalidation
-│   └── 0011-qcom-smbx-upstream-fixes-and-robustness.patch # watchdog/OV/float fixes, ICL ordering, revalidation robustness
+│   ├── 0011-qcom-smbx-upstream-fixes-and-robustness.patch # watchdog/OV/float fixes, ICL ordering, revalidation robustness
+│   ├── 0012-qcom-smbx-accept-negotiated-pd-sink-voltage.patch # explicit 5-12 V PD with 1.5 A/15 W caps
+│   ├── 0013-qcom-smbx-fix-load-offset-and-rerun-aicl.patch # correct SMB5 override register + AICL rerun
+│   ├── 0014-arm64-dts-qcom-phoenix-enable-pshold-restart.patch # Qualcomm PS_HOLD reboot path
+│   ├── 0015-qcom-smbx-apply-override-for-apsd-high-current.patch # DCP/CDP high-current override
+│   ├── 0016-qcom-smbx-allow-continuous-5v-to-12v-input.patch # continuous safe adapter window
+│   └── 0017-qcom-smbx-retry-transient-offline-status.patch # bounded power-path settle retries
 │
 ├── docs/
 │   ├── BATTERY-CHARGING.md                 # Charger safety design, live results, telemetry and limitations

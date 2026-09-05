@@ -1,9 +1,12 @@
-# Preserve administrator opt-in state for optional Phoenix server helpers.
-# With no existing wants symlink, "ignore" also leaves them disabled on a
-# fresh install.
+# Phoenix images from this project are headless-server installations.  Keep
+# policy-sensitive battery helpers opt-in, but always disable the graphical
+# greeter and enable the panel blanker and cold-boot dock recovery.
+disable greetd.service
+enable phoenix-screen-off.service
+enable phoenix-usb-host-wake.service
+
+# Preserve administrator opt-in state for the remaining optional helpers.
 ignore phoenix-charge-cap.timer
 ignore phoenix-battery-safety.service
 ignore phoenix-battery-telemetry.service
-ignore phoenix-screen-off.service
 ignore phoenix-typec-recover.timer
-ignore phoenix-usb-host-wake.service
