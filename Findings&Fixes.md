@@ -950,8 +950,8 @@ specification.
 
 | Backend | Assessment for this device |
 | --- | --- |
-| CPU | **High confidence.** Generic aarch64 llama.cpp should run on the Kryo 470 CPU. Establish this baseline first. |
-| Vulkan/Turnip | **Plausible and the first accelerator to test.** Mesa Turnip supports Adreno 6xx, the repository supplies the GPU ZAP firmware, and a prior live audit saw DRM nodes. `vulkaninfo` and llama.cpp execution have not yet proved that this Adreno 618 path works correctly. |
+| CPU | **Proven.** An ARMv8.2 + dot-product + FP16-vector build of the XHToken Spark fork loads Spark-X2.5-1.7B Q8_0 with a 131,072-token Q8 KV cache and generates valid output. |
+| Vulkan/Turnip | **Enumeration proven; Spark inference blocked.** Mesa Turnip and llama.cpp enumerate Adreno 618, but the Spark-enabled Vulkan backend rejects it because the device does not expose 16-bit storage. CPU-only mode must explicitly use `--device none`. |
 | OpenCL | **Experimental follow-up.** Qualcomm advertises OpenCL for the SoC, but that describes the platform/proprietary stack. It does not prove a usable OpenCL compute implementation under mainline Linux and Mesa on this phone. |
 | Hexagon/HTP | **Not a practical current target.** The SoC has Hexagon 688 and the port starts CDSP, but current llama.cpp HTP artifacts are documented for newer v73/v75/v79/v81 targets, not this generation. Firmware, FastRPC and a running remoteproc alone do not establish backend compatibility. |
 
@@ -974,10 +974,13 @@ The repository-specific prerequisites are encouraging but incomplete:
 - the firmware package also depends on the common Adreno A630 firmware;
 - the prior live snapshot reports `/dev/dri/card0` and `/dev/dri/renderD128`,
   but the project README correctly labels 3D acceleration as untested;
-- no successful `vulkaninfo`, llama.cpp device listing, model load or GPU
-  inference result has been recorded;
-- the latest connectivity audit could not reach the device to close those
-  gaps.
+- `vulkaninfo` now enumerates `Turnip Adreno (TM) 618`, Vulkan API 1.3.354,
+  Mesa/Turnip 26.1.6, and the unprivileged account can use `renderD128`;
+- packaged llama.cpp 0.2.0 lists both OpenBLAS and Vulkan, with the Vulkan
+  device reporting 4096 MiB total and 3686 MiB free;
+- Spark-X2.5 GPU inference is nevertheless unavailable: the Spark-enabled
+  backend reports `device Vulkan0 does not support 16-bit storage` and fails
+  model loading with `Unsupported device`.
 
 ### 21. Package claims verified, with an important repository caveat
 
@@ -1182,6 +1185,77 @@ Do not call GPU acceleration working until all of these are recorded:
 - peak memory leaves sufficient headroom for the normal server workload;
 - the final service is unprivileged, authenticated if network-accessible, and
   constrained to the tested model/context/concurrency configuration.
+
+### 28. Live Spark-X2.5 Q8_0 result — 2026-09-06
+
+The requested Spark-X2.5-1.7B Q8_0 model is installed and its full 128K context
+allocation has been proven on the POCO X2. This model uses the new `spark2_5`
+architecture, which Alpine's packaged llama.cpp build does not contain. At the
+time of testing, upstream Spark support was still an open llama.cpp change, so
+the XHToken fork was built for Alpine aarch64 in a Docker container on the Mac
+instead of compiling it continuously on the phone.
+
+Installed artifacts:
+
+```text
+Runtime:       /home/user/opt/llama-spark
+Source:        XHToken/llama.cpp
+Source commit: 4a3635c32fc9f044c2bde9ebeabf50c7e1ec5991
+Model:         /home/user/models/Spark-X2.5-1.7B-Q8_0.gguf
+Model bytes:   1820112736
+Model SHA-256: d9ac5d7374b07568fdcb3317cf6eff2b9afd2be6221f87347d12c11455eb5c4c
+```
+
+The runtime was compiled in an Alpine edge `linux/arm64` container with
+OpenBLAS, Vulkan, and the target-safe CPU architecture
+`armv8.2-a+dotprod+fp16+crypto+crc`. Building natively was abandoned after the
+phone reached roughly 90-92°C even at reduced parallelism. The packaged
+llama.cpp installation remains untouched as a fallback.
+
+The validated 128K CPU command profile is:
+
+```sh
+LD_LIBRARY_PATH=/home/user/opt/llama-spark \
+  /home/user/opt/llama-spark/llama-cli \
+  -m /home/user/models/Spark-X2.5-1.7B-Q8_0.gguf \
+  --device none -ngl 0 \
+  -c 131072 -ctk q8_0 -ctv q8_0 \
+  -t 8 -tb 8 -b 512 -ub 128 \
+  --reasoning off -st --simple-io
+```
+
+Measured results from a short single-turn run:
+
+```text
+Context allocation:      131072 tokens
+Model quantization:      Q8_0
+K/V cache quantization:  Q8_0 / Q8_0
+Maximum resident set:    4603932 KiB (~4.39 GiB)
+Swap used by test:       0
+Prompt processing:       ~21-22 tokens/s
+Token generation:        ~5 tokens/s
+Output sanity check:     Spark 128K ready
+```
+
+This proves that 128K can be allocated, but it leaves only a narrow memory
+margin on a device with about 5.4 GiB usable RAM. Run only one inference slot,
+keep K/V cache at Q8_0 or smaller, and do not combine this profile with another
+large memory workload. The advertised 1M context is not practical here.
+
+Vulkan offload is not currently viable for this model on Adreno 618. Both
+automatic and requested GPU offload fail before inference because the Turnip
+device reports no 16-bit storage support. `--device none` is required; `-ngl 0`
+alone is insufficient because the runtime's automatic memory-fitting probe may
+still attempt the Vulkan device.
+
+Thermals, rather than raw compute, are the production blocker. A short
+two-thread `llama-bench` pass measured 29.22 prompt tokens/s and 6.07 generation
+tokens/s, but the hottest SoC zone rapidly reached about 89.9°C while both CPU
+policies were using the `performance` governor. The wider benchmark was stopped.
+Do not create an always-on service with these clock/governor settings until a
+longer actively cooled test establishes a safe sustained profile. Maximum
+production performance must be selected after thermal equilibrium, likely with
+a dynamic governor and explicit concurrency of one.
 
 ## Production-safety validation matrix
 
