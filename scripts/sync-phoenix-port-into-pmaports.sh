@@ -46,20 +46,25 @@ ensure_kernel_config_symbol() {
 
 update_source_block() {
 	local file="$1"
-	local list_file="$2"
+	local remove_file="$2"
+	local insert_file="$3"
 	local tmp
 	tmp="$(mktemp)"
 
-	# Read patch-list from a file rather than -v so this works on BSD awk
+	# Read patch lists from files rather than -v so this works on BSD awk
 	# (macOS default) which rejects newlines inside -v assignments.
-	awk -v list_file="$list_file" '
+	awk -v remove_file="$remove_file" -v insert_file="$insert_file" '
 	BEGIN {
-		while ((getline line < list_file) > 0) {
+		while ((getline line < remove_file) > 0) {
+			if (line != "")
+				remove[line] = 1;
+		}
+		close(remove_file);
+		while ((getline line < insert_file) > 0) {
 			if (line != "")
 				order[++count] = line;
-			phoenix[line] = 1;
 		}
-		close(list_file);
+		close(insert_file);
 	}
 	$0 ~ /^source="/ { in_source = 1 }
 	in_source {
@@ -71,7 +76,7 @@ update_source_block() {
 			n = split(line, parts, /[ \t]+/);
 			fname = parts[n];
 			sub(/^.*\//, "", fname);
-			if (fname in phoenix)
+			if (fname in remove)
 				next;
 		}
 	}
@@ -91,20 +96,24 @@ update_source_block() {
 
 update_sha512_entries() {
 	local file="$1"
-	local list_file="$2"
+	local remove_file="$2"
+	local insert_file="$3"
 	local tmp
 	tmp="$(mktemp)"
 
-	awk -v list_file="$list_file" '
+	awk -v remove_file="$remove_file" -v insert_file="$insert_file" '
 	BEGIN {
-		while ((getline line < list_file) > 0) {
+		while ((getline line < remove_file) > 0) {
+			if (line != "")
+				target[line] = 1;
+		}
+		close(remove_file);
+		while ((getline line < insert_file) > 0) {
 			if (line == "")
 				continue;
 			order[++count] = line;
-			split(line, parts, /[ \t]+/);
-			target[parts[length(parts)]] = 1;
 		}
-		close(list_file);
+		close(insert_file);
 	}
 	$0 ~ /^sha512sums="/ { in_sha = 1 }
 	in_sha && $0 == "\"" {
@@ -124,12 +133,8 @@ update_sha512_entries() {
 		}
 		split(line, parts, /[ \t]+/);
 		file_name = parts[length(parts)];
-		if (target[file_name])
+		if (file_name in target)
 			next;
-		if (file_name ~ /\.patch$/) {
-			if (file_name in target)
-				next;
-		}
 	}
 	{ print }
 	' "$file" > "$tmp"
@@ -214,16 +219,17 @@ printf '%s\n' "${patch_names[@]}" > "$phoenix_manifest"
 
 patch_list_file="$(mktemp)"
 sum_lines_file="$(mktemp)"
-trap 'rm -f "$patch_list_file" "$sum_lines_file" "$old_phoenix_tmp"' EXIT
+phoenix_all_file="$(mktemp)"
+checksum_remove_file="$(mktemp)"
+trap 'rm -f "$patch_list_file" "$sum_lines_file" "$old_phoenix_tmp" "$phoenix_all_file" "$checksum_remove_file"' EXIT
 
 printf '%s\n' "${patch_names[@]}" > "$patch_list_file"
 # Build combined phoenix set for removal (previous + current) to avoid deleting unrelated upstream patches
-phoenix_all_file="$(mktemp)"
 cat "$old_phoenix_tmp" > "$phoenix_all_file" 2>/dev/null || true
 printf '%s\n' "${patch_names[@]}" >> "$phoenix_all_file"
 sort -u "$phoenix_all_file" -o "$phoenix_all_file"
 
-update_source_block "$kernel_apkbuild" "$phoenix_all_file"
+update_source_block "$kernel_apkbuild" "$phoenix_all_file" "$patch_list_file"
 
 # The phoenix panel driver is introduced by 0001/0003 and must be enabled
 # explicitly in the package kernel config to avoid oldconfig prompts/defaults.
@@ -238,19 +244,11 @@ ensure_kernel_config_symbol "$kernel_config" "CONFIG_CHARGER_QCOM_SMB2" "m"
 config_sum="$(sha512sum "$kernel_config" | awk '{print $1}')"
 ordered_sum_lines=("$config_sum  $(basename "$kernel_config")" "${sum_lines[@]}")
 printf '%s\n' "${ordered_sum_lines[@]}" > "$sum_lines_file"
-# For sha512 removal, also handle stale phoenix patches that are no longer in current
-# Append dummy checksum entries for old manifest names so update_sha512_entries will remove them
-if [[ -s "$old_phoenix_tmp" ]]; then
-	while IFS= read -r prev; do
-		[[ -z "$prev" ]] && continue
-		case "$prev" in *\/*|.*) continue;; esac
-		if ! grep -q "  $prev" "$sum_lines_file" 2>/dev/null; then
-			echo "dummy  $prev" >> "$sum_lines_file"
-		fi
-	done < "$old_phoenix_tmp"
-fi
-update_sha512_entries "$kernel_apkbuild" "$sum_lines_file"
-rm -f "$phoenix_all_file"
+# Remove the config plus every previous/current managed patch, but append only
+# real current checksums. Removal-only records must never enter sha512sums.
+printf '%s\n' "$(basename "$kernel_config")" > "$checksum_remove_file"
+cat "$phoenix_all_file" >> "$checksum_remove_file"
+update_sha512_entries "$kernel_apkbuild" "$checksum_remove_file" "$sum_lines_file"
 
 echo "Sync complete."
 echo "Device package:   $device_testing_dir/device-xiaomi-phoenix"

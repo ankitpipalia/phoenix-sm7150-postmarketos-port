@@ -16,10 +16,10 @@
 # Voltage is the primary urgency escalator; capacity is kept as legacy fallback.
 set -eu
 
-CAP_THRESHOLD=30
-VOLTAGE_THRESHOLD_UV=3600000
-PERSIST_SEC=0
-LOCK_FILE=/run/lock/phoenix-usb-role.lock
+CAP_THRESHOLD=${CAP_THRESHOLD:-30}
+VOLTAGE_THRESHOLD_UV=${VOLTAGE_THRESHOLD_UV:-3600000}
+PERSIST_SEC=${PERSIST_SEC:-0}
+LOCK_FILE=${LOCK_FILE:-/run/lock/phoenix-usb-role.lock}
 POWER_SUPPLY_ROOT=${POWER_SUPPLY_ROOT:-/sys/class/power_supply}
 TYPEC_ROOT=${TYPEC_ROOT:-/sys/class/typec}
 [ -r /etc/phoenix-typec-recover.conf ] && . /etc/phoenix-typec-recover.conf
@@ -55,37 +55,46 @@ fi
 # Note: qcom_smbx never returns Discharging, so don't require charger/status
 # The stronger evidence is partner present + source + offline + low voltage (checked below)
 
-# Check voltage/ capacity urgency. Voltage primary, capacity only if voltage invalid.
+# Check voltage/capacity urgency. Voltage is primary; capacity is used whenever
+# no valid voltage sample is available, including missing/unreadable files.
 urgent=0
 voltage_uv=""
-if [ -r "$qg/voltage_avg" ] || [ -r "$qg/voltage_now" ]; then
-	voltage_file="$qg/voltage_avg"
-	[ -r "$voltage_file" ] || voltage_file="$qg/voltage_now"
-	voltage_uv=$(cat "$voltage_file" 2>/dev/null || echo "")
+
+for voltage_file in "$qg/voltage_avg" "$qg/voltage_now"; do
+	[ -r "$voltage_file" ] || continue
+	voltage_uv=$(cat "$voltage_file" 2>/dev/null || true)
 	case "$voltage_uv" in
 		''|*[!0-9]*) voltage_uv="" ;;
 	esac
-	if [ -n "$voltage_uv" ]; then
-		if [ "$voltage_uv" -lt "$VOLTAGE_THRESHOLD_UV" ]; then
+	[ -n "$voltage_uv" ] && break
+done
+
+if [ -n "$voltage_uv" ]; then
+	if [ "$voltage_uv" -lt "$VOLTAGE_THRESHOLD_UV" ]; then
+		urgent=1
+	else
+		logger -t phoenix-typec-recover "stuck as source at ${voltage_uv}uV but above threshold ${VOLTAGE_THRESHOLD_UV}uV, deferring"
+		exit 0
+	fi
+else
+	# Voltage unavailable or invalid: fall back to the voltage-derived level.
+	cap=""
+	if [ -r "$qg/capacity" ]; then
+		cap=$(cat "$qg/capacity" 2>/dev/null || true)
+		case "$cap" in
+			''|*[!0-9]*) cap="" ;;
+		esac
+	fi
+	if [ -n "$cap" ]; then
+		if [ "$cap" -lt "$CAP_THRESHOLD" ]; then
 			urgent=1
 		else
-			logger -t phoenix-typec-recover "stuck as source at ${voltage_uv}uV but above threshold ${VOLTAGE_THRESHOLD_UV}uV, deferring"
+			logger -t phoenix-typec-recover "stuck as source with voltage unavailable at ${cap}% but above threshold CAP $CAP_THRESHOLD, deferring"
 			exit 0
 		fi
 	else
-		# Voltage invalid, fallback to capacity
-		if [ -r "$qg/capacity" ]; then
-			cap=$(cat "$qg/capacity" 2>/dev/null || echo 100)
-			case "$cap" in
-				''|*[!0-9]*) cap=100 ;;
-			esac
-			if [ "$cap" -lt "$CAP_THRESHOLD" ]; then
-				urgent=1
-			else
-				logger -t phoenix-typec-recover "stuck as source voltage invalid at ${cap}% but above threshold CAP $CAP_THRESHOLD, deferring"
-				exit 0
-			fi
-		fi
+		logger -t phoenix-typec-recover "stuck as source with no valid voltage/capacity urgency signal, deferring"
+		exit 0
 	fi
 fi
 [ "$urgent" -eq 1 ] || exit 0

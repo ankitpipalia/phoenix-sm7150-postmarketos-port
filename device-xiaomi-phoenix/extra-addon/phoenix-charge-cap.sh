@@ -35,56 +35,22 @@ behaviour_is() {
 	esac
 }
 
-if ! valid_uint "$START_VOLTAGE_UV" || ! valid_uint "$STOP_VOLTAGE_UV" ||
-   [ "$START_VOLTAGE_UV" -ge "$STOP_VOLTAGE_UV" ]; then
-	logger -p daemon.err -t phoenix-charge-cap \
-		"invalid voltage thresholds: require START_VOLTAGE_UV < STOP_VOLTAGE_UV"
-	exit 1
-fi
-# Require at least 50 mV hysteresis to avoid toggling
-if [ $((STOP_VOLTAGE_UV - START_VOLTAGE_UV)) -lt 50000 ]; then
-	logger -p daemon.err -t phoenix-charge-cap \
-		"hysteresis too small: STOP - START must be >= 50000 uV"
-	exit 1
-fi
-# Sanity against battery range (3.4-4.4V design)
-if [ "$START_VOLTAGE_UV" -lt 3400000 ] || [ "$STOP_VOLTAGE_UV" -gt 4400000 ]; then
-	logger -p daemon.err -t phoenix-charge-cap \
-		"thresholds outside 3.4-4.4V battery range"
-	exit 1
-fi
-
 charger="$POWER_SUPPLY_ROOT/pm8150b-charger"
 gauge="$POWER_SUPPLY_ROOT/qcom_qg"
 behaviour="$charger/charge_behaviour"
 state="$RUN_DIR/phoenix-charge-cap.inhibited"
 
-[ -r "$gauge/voltage_now" ] || exit 0
 [ -w "$behaviour" ] || {
 	logger -p daemon.err -t phoenix-charge-cap \
 		"charge_behaviour is unavailable; refusing to suspend USB input"
 	exit 1
 }
 
-voltage_file="$gauge/voltage_avg"
-[ -r "$voltage_file" ] || voltage_file="$gauge/voltage_now"
-voltage_uv=$(cat "$voltage_file" 2>/dev/null || true)
-valid_uint "$voltage_uv" || exit 0
-
 current_behaviour=$(cat "$behaviour" 2>/dev/null || echo unknown)
 
-# Ownership: state file means *we* performed the inhibit.
-# If kernel is inhibit-charge but we have no state file, it was external — do not touch.
-if behaviour_is inhibit-charge && [ ! -e "$state" ]; then
-	logger -p daemon.info -t phoenix-charge-cap \
-		"externally inhibited (${current_behaviour}), leaving alone"
-	exit 0
-fi
-if behaviour_is auto; then
-	rm -f "$state"
-fi
-
-# Reset helper for disabling timer while owning inhibit - must be after state/behaviour init
+# Reset must not depend on QGauge, source state, or normal threshold validity.
+# The ownership marker is the sole authority to undo an inhibit: without it,
+# an inhibit belongs to another controller and must remain untouched.
 if [ "${1:-}" = "reset" ]; then
 	if [ ! -e "$state" ]; then
 		logger -p daemon.info -t phoenix-charge-cap "reset: no owned inhibit, nothing to do"
@@ -103,6 +69,47 @@ if [ "${1:-}" = "reset" ]; then
 	rm -f "$state"
 	logger -t phoenix-charge-cap "reset: restored auto and cleared ownership state"
 	exit 0
+fi
+
+if [ "$#" -ne 0 ]; then
+	logger -p daemon.err -t phoenix-charge-cap "unknown argument: $1"
+	exit 2
+fi
+
+if ! valid_uint "$START_VOLTAGE_UV" || ! valid_uint "$STOP_VOLTAGE_UV" ||
+	   [ "$START_VOLTAGE_UV" -ge "$STOP_VOLTAGE_UV" ]; then
+	logger -p daemon.err -t phoenix-charge-cap \
+		"invalid voltage thresholds: require START_VOLTAGE_UV < STOP_VOLTAGE_UV"
+	exit 1
+fi
+# Require at least 50 mV hysteresis to avoid toggling
+if [ $((STOP_VOLTAGE_UV - START_VOLTAGE_UV)) -lt 50000 ]; then
+	logger -p daemon.err -t phoenix-charge-cap \
+		"hysteresis too small: STOP - START must be >= 50000 uV"
+	exit 1
+fi
+# Sanity against battery range (3.4-4.4V design)
+if [ "$START_VOLTAGE_UV" -lt 3400000 ] || [ "$STOP_VOLTAGE_UV" -gt 4400000 ]; then
+	logger -p daemon.err -t phoenix-charge-cap \
+		"thresholds outside 3.4-4.4V battery range"
+	exit 1
+fi
+
+[ -r "$gauge/voltage_now" ] || exit 0
+voltage_file="$gauge/voltage_avg"
+[ -r "$voltage_file" ] || voltage_file="$gauge/voltage_now"
+voltage_uv=$(cat "$voltage_file" 2>/dev/null || true)
+valid_uint "$voltage_uv" || exit 0
+
+# Ownership: state file means *we* performed the inhibit.
+# If kernel is inhibit-charge but we have no state file, it was external — do not touch.
+if behaviour_is inhibit-charge && [ ! -e "$state" ]; then
+	logger -p daemon.info -t phoenix-charge-cap \
+		"externally inhibited (${current_behaviour}), leaving alone"
+	exit 0
+fi
+if behaviour_is auto; then
+	rm -f "$state"
 fi
 
 # If external power is absent, nothing to inhibit (but reset already handled)

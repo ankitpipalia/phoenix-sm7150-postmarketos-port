@@ -5,10 +5,12 @@ device at `192.168.1.101`, and the battery/charging safety review performed on
 the `feat/phoenix-battery-charging-safety` work before it was merged to `main`.
 
 The initial inspection was read-only. On September 4, 2026, the safe userspace
-and firewall fixes were then staged and tested on the device. Kernel patch 0010
-was compiled locally but has not yet been installed on the phone. Values below
-are observations from this test device, not guarantees for every Phoenix,
-battery, charger, cable, or USB-C hub.
+and firewall fixes were then staged and tested on the device. On September 5,
+2026, patches 0010+0011 and the r25 userspace package were built into a complete
+postmarketOS image in an ARM64 Docker Desktop Linux VM. That image has not yet
+been installed on the phone. Values below are observations from this test
+device, not guarantees for every Phoenix, battery, charger, cable, or USB-C
+hub.
 
 ## Implementation and test status — September 5, 2026
 
@@ -50,6 +52,86 @@ are later than this workstation audit clock. They are retained below as prior
 device-recorded observations, not as independently verified chronology. Compare
 workstation UTC, device UTC, uptime, and boot ID at the next successful login.
 
+### Review4 fixes and completed image build — repository r25
+
+All four implementation defects found by the read-only audit are fixed locally:
+
+- charge-cap reset is processed before threshold and QGauge validation;
+  `phoenix-charge-cap-reset.service` provides a packaged reset path that only
+  releases inhibition owned by the limiter;
+- telemetry now walks unbounded `-vN` filenames until it finds an empty file or
+  matching header and never appends across schemas;
+- Type-C recovery now checks capacity when voltage attributes are absent,
+  unreadable, or invalid;
+- pmaports synchronization now has separate removal/insertion inputs, never
+  emits dummy checksums, preserves unrelated patch checksums, and is idempotent.
+
+`tests/test-battery-tools.sh` and `tests/test-sync-phoenix-port.sh` pass. The
+device APKBUILD source/checksum names and all file hashes validate, and the
+package release is now r25.
+
+The flashable ROM is now **built and filesystem-checked**. Docker Desktop
+29.7.2 supplied an ARM64 Linux 7.0.12 VM on the Apple Silicon host. The builder
+must be privileged so pmbootstrap can use mounts and loop devices, and its
+`.pmbootstrap` work directory must live on a native Docker volume. Keeping the
+chroot on the macOS VirtioFS bind mount caused GNU tar to fail while unpacking
+the Linux tree (`Directory renamed before its status could be extracted`). The
+native volume removed that failure. Docker's LinuxKit kernel also has
+`loop.max_part=0`, so a short build-host watcher had to create
+`/dev/loop0p1`/`loop0p2` from the dynamic major/minor values exposed in sysfs
+after `partprobe`.
+
+Apple Container 1.3.1 was also started successfully. A persistent
+`phoenix-builder` Alpine machine with 6 CPUs and 6 GiB RAM can see the host home
+directory and, when commands run with `container machine run --root`, has
+working tmpfs mounts and loop devices. It is a viable backup Linux builder;
+Docker was retained for the active build to avoid restarting the completed
+work.
+
+The proprietary package was reconstructed from authoritative matching inputs:
+
+- Xiaomi Firmware Updater's exact 84.9 MB V13.0.6.0 SGHCNXM firmware package
+  supplied `NON-HLOS.bin`; its downloaded MD5 was the published
+  `eb25b9fe1b838b4bacb763f5e83d2d6f`.
+- ADSP, CDSP, modem, Venus and WLAN images came from that `NON-HLOS.bin`.
+- Phoenix `a615_zap` and `ipa_fws` segments came from the
+  `xiaomi-sm6150/proprietary_vendor_xiaomi_phoenix` lineage-23.0 tree, whose
+  relevant commit states that it was pulled from 13.0.6.0 stable.
+- The Novatek FW01 binary was converted from the matching LineageOS Phoenix
+  kernel's Intel HEX firmware.
+
+`scripts/build-firmware-tarball.sh` accepted all eight required blobs and
+created a deterministic 46 MiB archive. `firmware-xiaomi-phoenix` is now r4 and
+pins SHA-512
+`4adf923758500caab261f19fc9d3dd020a37cd06e36fb8d68714d8ed24779ff691ec010b3b4b57cfec0eb7050530be7f67ffdab86e2ae1233aa37d09c47658b0`.
+The kernel, firmware and device packages all completed through pmbootstrap,
+followed by a successful Phosh/systemd image install for user `user`.
+
+Build artifact:
+
+```text
+/Users/ankitpipalia/Git/artifacts/xiaomi-phoenix-20260905.img
+size:   3,896,508,416 bytes
+sha256: b9ce18f09c046904075f12096d1e236c4a8fb4ed5a47bb5c948dad3aff16af18
+```
+
+Read-only `fsck.fat -n` found a valid boot filesystem with 23 files, and
+`e2fsck -fn` completed all five passes on `pmOS_root` without errors. The staged
+rootfs contains `sm7150-xiaomi-phoenix.dtb`, the Phoenix Adreno and Novatek
+firmware, and `phoenix-charge-cap-reset.service`.
+
+Matching later-flash artifacts are also prepared under
+`/Users/ankitpipalia/Git/artifacts/`:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `u-boot-sm7150-xiaomi-davinci-samsung.img` | `a18bf172a03dd8532da85775600c36813cd0128552ca83ac58000f5c787ecd36` |
+| `vbmeta.img` | `627cbb821516c3e90184ff8d9193436dbfc5ded5d683a8c6761130c1df952f0f` |
+| `vbmeta_system.img` | `590ea129afb32c8b8a4292012ec1ed8799a4c901951c8f8f1015c6f8d2d47875` |
+
+The stock fastboot archive itself matched Xiaomi's published MD5
+`edf8a2c9f63046c2a32c0028b57f0f61`. No device was flashed during this build.
+
 ### Prior review3 implementation snapshot
 
 | Change | Repository | Device result (live re-audit) |
@@ -68,10 +150,10 @@ workstation UTC, device UTC, uptime, and boot ID at the next successful login.
 | Optional preset handling | `ignore` preserves opt-in across upgrades | Verified r21 kept `telemetry/typec-recover/screen-off/usb-host-wake enabled`, `charge-cap/safety disabled` |
 | Kernel 0011 upstream fixes | New patch `0011-qcom-smbx-upstream-fixes-and-robustness.patch` (watchdog base, OV notify, float off-by-one, ICL ordering/log, revalidation) | Compile-tested via `git apply --check`; not yet flashed |
 | Userspace env override | `phoenix-battery-safety.sh` + `phoenix-charge-cap.sh` now preserve env over config for testing | Device-tested 2026-09-05: env `START==STOP` correctly rejected, `EMERGENCY_SAMPLES` override works, thermal with invalid voltage fires |
-| Charge-cap reset lifecycle | Reset helper exists, but is ordered after gauge validation and is not connected to unit/timer stop | **Open:** move reset handling before all gauge reads and provide a documented/wired safe disable path |
-| Telemetry schema rollover | Base plus v2/v3/v4 selection exists | **Open:** version selection is capped and can append to a mismatched non-empty v4 file |
-| Type-C capacity fallback | Voltage primary, capacity fallback intended | **Open:** fallback is skipped when both voltage attributes are absent/unreadable |
-| pmaports patch-manifest cleanup | Old manifest is collected to remove stale Phoenix patches | **Open:** removal and insertion sets are conflated; stale sources and dummy checksums can be emitted |
+| Charge-cap reset lifecycle | Fixed in r25: reset precedes gauge/threshold checks; dedicated reset unit packaged | Local regression test passes with QGauge absent and invalid thresholds; hardware test pending |
+| Telemetry schema rollover | Fixed in r25: unbounded version selection chooses only an empty or matching-schema file | Local base-through-v4 mismatch test creates v5 and leaves v4 unchanged |
+| Type-C capacity fallback | Fixed in r25: missing/unreadable/invalid voltage all reach capacity fallback | Local missing-voltage/low-capacity test reaches the guarded sink attempt |
+| pmaports patch-manifest cleanup | Fixed in r25: removal and insertion sets separated; AWK membership no longer deletes unrelated patch checksums | Two-run fixture is idempotent, removes stale entries, preserves unrelated entries, and emits only valid SHA-512 records |
 | llama.cpp inference | CPU is feasible; Turnip/Vulkan is the best first accelerator candidate; OpenCL and Hexagon are later research | **Not runtime-verified:** prior audit saw `/dev/dri/card0` and `renderD128`, but Vulkan enumeration, package availability on the configured repositories, performance, stability, memory pressure, and thermals remain untested |
 
 Live r24 upgrade preserved opt-in state and left `charge-cap`/`safety` disabled as intended. Pre-upgrade manual units and live files remain backed up under
@@ -158,7 +240,7 @@ Observed during the September 2026 audits (re-audited 2026-09-03 23:07 UTC, re-t
 | TCPM | `tcpm-source-psy-c440000.spmi:pmic@0:typec@1500 online=1 voltage_now=5000000 current_max=3000000 usb_type=[C] PD PD_PPS ...` (2026-09-03 23:07) | — |
 | Type-C | `port0 power_role=source [sink]` `data_role=host` `power_operation_mode=3.0A` `vconn=no` — **current role is shown in brackets, so `source [sink]` means SINK** (per `Documentation/ABI/testing/sysfs-class-typec`); at 2026-09-03 23:07 `charger online=1 Charging` `current +53mA` (valid sink with powered dock: power sink + data host, as verified in upstream SMB5 v4 `powered dock: data host + power sink`); earlier Aug 23 `source [sink]` reading, if literal, also means sink — not sourcing — so "stuck as source" is *not* supported by that `power_role` reading (deep discharge still genuine due to `charger/TCPM offline`); partner present (`port0-partner/` exists) | local port acting as a 5 V/3 A source; SMB charger offline |
 | Device package | `device-xiaomi-phoenix-1-r24` aarch64 (installed `2026-09-06 00:05` via `apk add --allow-untrusted`; `20-phoenix-optional.preset` present, `Restart=always`, `vnow/vavg` separate, `flock` dep) | `device-xiaomi-phoenix-1-r20` (locally built) |
-| Repository package | `device-xiaomi-phoenix-1-r24` (`pkgrel=24` in `APKBUILD:6`, `20-phoenix-optional.preset` + safety `vnow/vavg` + `proof_discharge||!online` + typec `Discharging` removed + `sink&&online`) | `device-xiaomi-phoenix-1-r20` |
+| Repository package | `device-xiaomi-phoenix-1-r25` (`pkgrel=25`; review4 reset, telemetry rollover, Type-C fallback and sync fixes included) | `device-xiaomi-phoenix-1-r20` |
 | Containers | `phoenix-monitor Up 11 days`, `cloudflared Up ~1h` | Docker monitor and Cloudflare tunnel running |
 | Kubernetes | `phoenix 1 node Ready 91d`; `coredns-8db54c48d-fznfq 1/1`, `local-path-provisioner-5d9d9885bc-44rl9 1/1` (27m), `metrics-server-786d997795-676bp 1/1` (26m) `Running`; `kubectl top node phoenix 489m 6% 1857Mi`; `nft` `cni0 tcp dport {6443,10250}` | node Ready; all three core pods `1/1 Running` after nftables fix |
 | systemd | `system is running`, `--failed 0`; `phoenix-battery-telemetry active running` (uptime `4585s`, boot_id `76258377-...`), `adsp-disable-recovery active exited`, `wlan-mac active exited`; `phoenix-charge-cap.timer disabled` (stopped `22:37`), `safety disabled`; `qbootctl masked`; `preset` `90-phoenix-wlan-mac enable` + `20-phoenix-optional ignore` | — |
@@ -172,7 +254,7 @@ have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with 
 
 ### Fix: eliminate device/repository drift
 
-1. Build and flash a fresh image from current `main` (now r24 + 0010+0011), or upgrade the kernel and
+1. Build and flash a fresh image from current `main` (now r25 + 0010+0011), or upgrade the kernel and
    `device-xiaomi-phoenix` package together. **Live 2026-09-06 00:05:** r24 package upgraded via `apk` with `mkinitfs`; kernel still requires rebuild/flash to obtain `charge_behaviour` (0010+0011).
 2. Verify the installed package release and kernel build after boot. **Live:** `device-xiaomi-phoenix-1-r24` (`preset 20-phoenix-optional.preset` present, `Restart=always` + `proof_discharge||!online`, `flock` dep), kernel `7.1.0-rc3-sm7150 Sat May 16 21:23:28 UTC` — kernel still needs flash (device r24, kernel May).
 3. Completed: old manual `/etc/systemd/system/phoenix-*` units and the stale
@@ -196,11 +278,11 @@ have been moved aside (`/var/backups/phoenix-fix-20260904/systemd-manual/` with 
 | **P1** | Implemented, compile-tested: remove cached ICL early return/write API (now log-on-change) |
 | **P1** | Implemented: label QGauge output as voltage-derived level |
 | **P1** | Implemented and device-tested: monotonic uptime plus boot ID + `ls -1t` + power integration fix |
-| **P1** | Rebuild/flash the current r24 package and kernel (0010+0011) as one tested image; userspace is logic-tested and the kernel is compile-tested, but the combination is not hardware-validated |
-| **P1** | **Open:** make charge-cap reset independent of QGauge readings and wire/document a safe timer-disable path that restores owned inhibition to `auto` |
-| **P1** | **Open:** separate stale-entry removal from current-entry insertion in the pmaports sync helper; never emit dummy checksum records |
-| **P1** | **Open:** make telemetry schema rollover unbounded or fail closed without appending when all candidate headers mismatch |
-| **P1** | **Open:** use the Type-C capacity fallback when voltage files are absent as well as when their contents are invalid |
+| **P1** | Rebuild/flash the current r25 package and kernel (0010+0011) as one tested image; userspace is logic-tested and the kernel is compile-tested, but the combination is not hardware-validated |
+| **P1** | Implemented and locally tested in r25: charge-cap reset is independent of QGauge/threshold validity; dedicated reset unit documents the safe disable path |
+| **P1** | Implemented and locally tested: pmaports sync separates stale removal from current insertion and preserves unrelated patch checksums |
+| **P1** | Implemented and locally tested: telemetry rollover selects an unbounded safe version without modifying mismatched files |
+| **P1** | Implemented and locally tested: Type-C capacity fallback handles absent/unreadable/invalid voltage attributes |
 | **P1** | Partial: device-provided passwordless removed, `eth*` still trusted (P2), unmanaged `user-nopasswd` remains (see §18) |
 | **P2** | Add sustained thresholds and minimum charge/inhibit dwell times (proposed 60s/2-5m/30m in §3, not yet implemented) |
 | **P2** | Clearly report learned FCC and SOH as unavailable |
@@ -326,17 +408,24 @@ deployment. If inhibition cannot preserve the system power path on this PMIC
 configuration, stop and investigate instead of falling back silently to
 USB-input cycling.
 
-#### Open reset-lifecycle defect found in the read-only audit
+#### Reset-lifecycle defect fixed in r25
 
-The script currently checks `qcom_qg/voltage_now` and parses a valid voltage
-before it handles the `reset` argument. A missing or invalid gauge therefore
-causes an early successful exit while an ownership marker and
-`inhibit-charge` may remain active. Process reset immediately after locating
-and validating the writable `charge_behaviour` attribute; reset must not depend
-on voltage, source presence, or normal threshold configuration. The oneshot
-service also has no `ExecStop`, so merely disabling/stopping the timer does not
-invoke the reset helper. Provide an explicit, tested disable/reset workflow or
-a dedicated reset unit, and verify that external inhibition is never cleared.
+The script formerly checked `qcom_qg/voltage_now` and parsed a valid voltage
+before handling `reset`, which could leave an owned inhibit active. Reset now
+runs immediately after locating the writable `charge_behaviour` attribute and
+does not depend on voltage, source state, or normal threshold validity. A
+dedicated `phoenix-charge-cap-reset.service` is packaged because `ExecStop` on
+the recurring oneshot would not provide correct timer semantics. Safely disable
+and release the limiter with:
+
+```sh
+systemctl disable --now phoenix-charge-cap.timer
+systemctl start phoenix-charge-cap-reset.service
+```
+
+The ownership marker remains authoritative: reset with no marker leaves an
+external controller's inhibit untouched. Both cases and missing-QGauge reset
+are covered by the local regression suite; hardware validation remains pending.
 
 After proper inhibition works, add sustained thresholds and dwell time, for
 example:
@@ -496,15 +585,13 @@ The collector starts a `-v2.tsv` file rather than mixing its schema into an
 existing same-day legacy log. **2026-09-05 fix:** collector now has `SCHEMA_VERSION=2` with `v3` fallback, validates selected log's header before append, and prefers online TCPM source deterministically. Report now uses `ls -1t | head -1` to prefer `-v2`, integrates `Pavg=(V0*I0+V1*I1)/2` for correct mWh, and respects `LOG_DIR` env override. Device-tested: `0.847 mWh` power integration correct, `ls -1t` prefers `-v2`, `boot_id` still correct. It
 continues integrating QGauge battery current, not charger input current.
 
-#### Open schema-rollover defect found in the read-only audit
+#### Schema-rollover defect fixed in r25
 
-Schema rollover is hard-coded through `-v4`. If all four candidate files are
-non-empty and have mismatched headers, the final validation selects the same
-incompatible v4 file and then appends a new-format row to it. Replace the nested
-v2/v3/v4 selection with a loop that chooses the first absent or matching file,
-or exit without writing if a safe target cannot be created. Add a test where
-base through v4 all contain distinct incompatible headers and assert that none
-of them receives a row.
+Schema rollover was hard-coded through `-v4`, allowing a new-format row to be
+appended to an incompatible v4 file. The collector now loops through unbounded
+`-vN` candidates and selects only a matching non-empty file or a new/empty file.
+The regression test creates incompatible base, v2, v3 and v4 files, verifies v4
+is unchanged, and verifies that v5 receives exactly one header and one sample.
 
 ### 10. Learned capacity and SOH are unavailable
 
@@ -646,14 +733,14 @@ the charger is offline, and battery current remains negative (synthetic check: `
 recovery mechanism, but do not rely on a late 30% threshold as the primary
 unattended protection; the low-voltage shutdown service remains mandatory. **2026-09-05 fix:** typec-recover now uses voltage `3600000uV` as primary urgency (capacity as fallback), acquires `/run/lock/phoenix-usb-role.lock` shared with `usb-host-wake`, verifies `power_role` readback (`[sink]`/`[source]`) before logging, and logs deferred `stuck-as-source` above threshold for visibility. `usb-host-wake` also uses same lock and returns `exit 1` on final failure for `systemctl --failed` visibility. Device-logic-tested via `POWER_SUPPLY_ROOT` fakes.
 
-#### Open fallback defect found in the read-only audit
+#### Missing-voltage fallback defect fixed in r25
 
-The current capacity fallback is nested inside the condition that at least one
-voltage attribute is readable. When both `voltage_avg` and `voltage_now` are
-absent or unreadable, `urgent` remains false and recovery exits without checking
-capacity. Treat missing voltage attributes the same as invalid voltage content,
-then evaluate a valid capacity sample conservatively. Add separate tests for
-missing files, unreadable files, invalid contents, and invalid capacity.
+The capacity fallback was nested inside the condition that at least one voltage
+attribute was readable. Voltage selection now tries average and instantaneous
+attributes independently, accepts the first valid value, and checks capacity
+whenever neither produces a valid sample. Missing-voltage plus low-capacity is
+covered by a local regression test. Invalid or unavailable capacity still fails
+closed without changing the Type-C role.
 
 ## Security findings
 
@@ -696,18 +783,20 @@ can therefore be inserted back into the destination APKBUILD. The checksum path
 has the same structural problem: `dummy  <old-patch>` records are added to the
 list consumed by `update_sha512_entries()`, which appends every list record.
 
-#### Fix required
+#### Implemented fix in r25
 
-Use two explicit inputs for both transformations:
+The helper now uses two explicit inputs for both transformations:
 
 - removal set: previous manifest plus current manifest;
 - insertion set: current patch names/checksums only.
 
-Never represent removal-only checksums as appendable dummy records. Add an
-integration fixture containing one unrelated upstream patch, one stale Phoenix
-patch, and the current Phoenix patch set. After two sync runs, assert that the
-result is idempotent, the unrelated patch remains, the stale patch is absent,
-and every appended checksum is a real 128-hex-character SHA-512 value.
+Removal-only checksums are no longer represented as appendable dummy records.
+The AWK membership check was also corrected so probing a name does not create an
+empty array entry and subsequently remove every unrelated `.patch` checksum.
+The integration fixture contains an unrelated upstream patch, a stale Phoenix
+patch, and the current Phoenix patch set. Two consecutive sync runs are
+idempotent; the unrelated patch remains, the stale patch is absent, and every
+appended checksum is a real 128-hex-character SHA-512 value.
 
 ## llama.cpp feasibility and maximum-performance plan
 

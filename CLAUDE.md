@@ -56,7 +56,16 @@ fastboot reboot
 ./scripts/wipe-pmbootstrap-state.sh
 ```
 
-There is no test suite, no linter, no CI in this repo — the only feedback loop is `pmbootstrap build`/`install` and observing boot/dmesg on the actual device over SSH at `user@172.16.42.1` (RNDIS) once it comes up.
+Focused host-side regression tests now cover the battery helpers and pmaports
+sync transformations:
+
+```sh
+sh tests/test-battery-tools.sh
+bash tests/test-sync-phoenix-port.sh
+```
+
+They do not replace `pmbootstrap build`/`install` or live boot/dmesg validation
+on the device over SSH at `user@172.16.42.1` (RNDIS).
 
 ## What `sync-phoenix-port-into-pmaports.sh` actually does (important)
 
@@ -107,9 +116,9 @@ These are non-obvious and easy to undo accidentally — be careful before "simpl
 - **`/etc/apk/world` doesn't always reflect deletions.** A device pkg `depends="…doas-sudo-shim…"` line gets pinned into world during install, so removing the dependency from the APKBUILD doesn't remove the world entry; flash a fresh image or `apk del doas-sudo-shim` post-upgrade if you ever re-add+remove a dep.
 - **`adsp-disable-recovery.service` is load-bearing for thermal/battery.** Phoenix's ADSP firmware's `sensor_process` PD crashes at `SNS_REG_INIT` (`sns_registry_sensor.c:94: SNS_RC_SUCCESS == rc`) every time. The default `qcom_q6v5_pas` `recovery=enabled` policy then restarts the entire ADSP every ~4 s — observed ~11 crashes/min, package temp ~64 °C at 0.12 load, and a battery drain that empties a charged battery in ~1 h. The service writes `disabled` to `/sys/class/remoteproc/remoteproc0/recovery` early in `sysinit.target`; do NOT remove or disable it without also fixing the firmware probe (no known fix without proprietary sensor registry). Audio is broken anyway (`q6asm-dai` probe `-22`), and `cdsp`/`modem` remoteprocs are independent.
 - **Autologin recipe (optional, not in the package):** `phrog` (greetd-based) prompts for the user PIN at every boot by default. To bypass for kiosk-style use, add `[initial_session] command = "/usr/bin/phosh-session"` + `user = "user"` to `/etc/phrog/greetd-config.toml` and `gsettings set org.gnome.desktop.screensaver lock-enabled false` for the user. Kept out of the device package because it disables a security boundary that many users want.
-- **`phoenix-charge-cap.timer` exists for 24/7 server use; disabled by default.** It uses voltage hysteresis (4.00-4.10 V by default) and patch 0010's `charge_behaviour=inhibit-charge`, which leaves USB input online. It refuses to run on an old kernel rather than falling back to `STATUS`/`USBIN_SUSPEND`. Adjust `/etc/phoenix-charge-cap.conf` (`START_VOLTAGE_UV=`, `STOP_VOLTAGE_UV=`).
+- **`phoenix-charge-cap.timer` exists for 24/7 server use; disabled by default.** It uses voltage hysteresis (4.00-4.10 V by default) and patch 0010's `charge_behaviour=inhibit-charge`, which leaves USB input online. It refuses to run on an old kernel rather than falling back to `STATUS`/`USBIN_SUSPEND`. Adjust `/etc/phoenix-charge-cap.conf` (`START_VOLTAGE_UV=`, `STOP_VOLTAGE_UV=`). To disable it while safely releasing an inhibit owned by the limiter, run `systemctl disable --now phoenix-charge-cap.timer && systemctl start phoenix-charge-cap-reset.service`; reset deliberately does not depend on QGauge data and never clears an external controller's inhibit.
 - **`phoenix-battery-safety.service` is a separate shutdown guard; disabled by default.** It watches voltage, discharge current, source presence, and temperature every five seconds. Validate its conservative thresholds in a controlled source-loss test before enabling it on an unattended device.
-- **`phoenix-typec-recover.timer` rescues "stuck as source" typec state; disabled by default.** When charger is briefly removed while a hub is still attached, the typec stack swaps to source/host so the hub keeps running on battery. When the charger reappears, no PD `PR_Swap` happens with a non-PD hub (`pd_revision=0.0`) — phone stays sourcing forever, draining battery. This timer (5-min interval) detects the condition (`power_role=[source]`, `online=0`, `status=Discharging`, partner present) **only when capacity < 30%** (configurable in `/etc/phoenix-typec-recover.conf` via `CAP_THRESHOLD`), and forces a manual swap by writing `sink` to `power_role`. If no external power is actually available, it reverts to `source` so the hub stays powered. Opt in with `systemctl enable --now phoenix-typec-recover.timer`. Manual one-shot recovery anytime: `echo sink | sudo tee /sys/class/typec/port0/power_role`.
+- **`phoenix-typec-recover.timer` rescues "stuck as source" Type-C state; disabled by default.** When charger is briefly removed while a hub is still attached, the Type-C stack can swap to source/host so the hub keeps running on battery. The timer requires `[source]`, charger offline and a partner, then uses low voltage as its primary urgency signal and the voltage-derived level as a fallback when both voltage attributes are missing or invalid. It forces a manual swap by writing `sink`; if no external power appears, it reverts to `source` so the hub stays powered. Configure `/etc/phoenix-typec-recover.conf` and opt in with `systemctl enable --now phoenix-typec-recover.timer`.
 - **`modules-initfs`** only lists three modules (`nt36xxx-spi`, `panel_g7b_37_02_0a_dsc`, `qcom_wled`) — what's needed for the panel/touch path to come up in initramfs. Adding modules here grows the initramfs unnecessarily; only add what's blocking early-boot display/IO.
 
 ## Firmware tarball (`scripts/build-firmware-tarball.sh`)

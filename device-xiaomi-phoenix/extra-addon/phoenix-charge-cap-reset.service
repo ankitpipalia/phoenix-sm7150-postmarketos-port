@@ -1,0 +1,8 @@
+[Unit]
+Description=Disable Phoenix charge cap and restore owned charging state
+Conflicts=phoenix-charge-cap.timer
+After=phoenix-charge-cap.timer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/phoenix-charge-cap.sh reset

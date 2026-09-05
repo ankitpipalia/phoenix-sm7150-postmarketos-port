@@ -44,68 +44,26 @@ write_header() {
     printf 'epoch_s\tiso8601\tuptime_s\tboot_id\tvoltage_level_pct\tbattery_voltage_uv\tbattery_voltage_avg_uv\tbattery_voltage_ocv_uv\tbattery_current_ua\tbattery_current_avg_ua\tbattery_temp_decic\tcharger_online\tcharger_status\tcharger_health\tcharger_usb_type\tusb_input_voltage_uv\tusb_input_current_ua\tusb_input_current_limit_ua\ttcpm_online\ttcpm_voltage_uv\ttcpm_current_max_ua\ttcpm_usb_type\ttypec_power_role\n'
 }
 
-SCHEMA_VERSION=2
 last_day=
 sample_count=0
 while :; do
-    day=$(date -u +%F)
-    base_log="$LOG_DIR/telemetry-$day.tsv"
-    # Find correct versioned log for today's schema
-    expected_header=$(write_header)
-    log="$base_log"
-    if [ -s "$log" ]; then
-        IFS= read -r existing_header < "$log" || existing_header=
-        if [ "$existing_header" != "$expected_header" ]; then
-            # Legacy schema present — migrate to -v2
-            log="$LOG_DIR/telemetry-$day-v2.tsv"
-            # If v2 already exists with wrong schema (future v3), bump again
-            if [ -s "$log" ]; then
-                IFS= read -r v2_header < "$log" || v2_header=
-                if [ "$v2_header" != "$expected_header" ]; then
-                    log="$LOG_DIR/telemetry-$day-v3.tsv"
-                    # Never truncate existing v3; if header mismatched, use v4
-                    if [ -s "$log" ]; then
-                        IFS= read -r v3_header < "$log" || v3_header=
-                        if [ "$v3_header" != "$expected_header" ]; then
-                            log="$LOG_DIR/telemetry-$day-v4.tsv"
-                        fi
-                    fi
-                fi
-            fi
-        fi
-    fi
-    # Validate selected log before append - never truncate, just find next version
-    if [ -s "$log" ]; then
-        IFS= read -r cur_header < "$log" || cur_header=
-        if [ "$cur_header" != "$expected_header" ]; then
-            # Selected log has wrong schema, try next version (v3/v4)
-            if [ "$log" = "$base_log" ]; then
-                log="$LOG_DIR/telemetry-$day-v2.tsv"
-            elif [ "$log" = "$LOG_DIR/telemetry-$day-v2.tsv" ]; then
-                log="$LOG_DIR/telemetry-$day-v3.tsv"
-            else
-                log="$LOG_DIR/telemetry-$day-v4.tsv"
-            fi
-            # If new candidate also mismatched, keep bumping (up to v4)
-            if [ -s "$log" ]; then
-                IFS= read -r cur2 < "$log" || cur2=
-                if [ "$cur2" != "$expected_header" ]; then
-                    log="$LOG_DIR/telemetry-$day-v4.tsv"
-                fi
-            fi
-        fi
-    fi
-    # Ensure header exists before append, regardless of last_day (append-safe)
-    if [ ! -s "$log" ]; then
-        write_header > "$log"
-    else
-        IFS= read -r chk < "$log" || chk=
-        if [ "$chk" != "$expected_header" ]; then
-            # Header still mismatched after version bump - start fresh v4
-            log="$LOG_DIR/telemetry-$day-v4.tsv"
-            [ -s "$log" ] || write_header > "$log"
-        fi
-    fi
+	day=$(date -u +%F)
+	base_log="$LOG_DIR/telemetry-$day.tsv"
+	expected_header=$(write_header)
+	log="$base_log"
+	version=1
+	# Never append across schemas and never truncate an existing log. Walk
+	# versioned names until an empty file or a matching header is found.
+	while [ -s "$log" ]; do
+		IFS= read -r existing_header < "$log" || existing_header=
+		[ "$existing_header" = "$expected_header" ] && break
+		version=$((version + 1))
+		log="$LOG_DIR/telemetry-$day-v$version.tsv"
+	done
+
+	if [ ! -s "$log" ]; then
+		write_header > "$log"
+	fi
 
     if [ "$day" != "$last_day" ]; then
         find "$LOG_DIR" -type f -name 'telemetry-*.tsv' \

@@ -211,6 +211,18 @@ rm -f "$test_root/run8/phoenix-charge-cap.inhibited"
 POWER_SUPPLY_ROOT="$test_root/power8" RUN_DIR="$test_root/run8" sh "$cap_script" reset 2>&1 | head -n 5
 [ "$(cat "$test_root/power8/pm8150b-charger/charge_behaviour")" = "inhibit-charge" ] || fail "reset wrongly overrode external inhibit"
 
+# Reset must work without QGauge data and despite invalid normal thresholds.
+mkdir -p "$test_root/power10/pm8150b-charger" "$test_root/run10"
+printf 'inhibit-charge\n' > "$test_root/power10/pm8150b-charger/charge_behaviour"
+touch "$test_root/run10/phoenix-charge-cap.inhibited"
+POWER_SUPPLY_ROOT="$test_root/power10" RUN_DIR="$test_root/run10" \
+	START_VOLTAGE_UV=invalid STOP_VOLTAGE_UV=invalid \
+	sh "$cap_script" reset 2>&1 | head -n 5
+[ "$(cat "$test_root/power10/pm8150b-charger/charge_behaviour")" = "auto" ] ||
+	fail "reset with missing QGauge did not restore auto"
+[ ! -e "$test_root/run10/phoenix-charge-cap.inhibited" ] ||
+	fail "reset with missing QGauge did not clear marker"
+
 # ---- Charge-cap offline high voltage should be no-op ----
 mkdir -p "$test_root/power9/qcom_qg" "$test_root/power9/pm8150b-charger" "$test_root/run9"
 printf 'auto\n' > "$test_root/power9/pm8150b-charger/charge_behaviour"
@@ -222,15 +234,36 @@ POWER_SUPPLY_ROOT="$test_root/power9" RUN_DIR="$test_root/run9" sh "$cap_script"
 
 # ---- Telemetry v4 exhaustion: create base, v2, v3, v4 all mismatched, ensure no truncation ----
 mkdir -p "$test_root/log3"
-printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05.tsv"
-printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05-v2.tsv"
-printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05-v3.tsv"
-printf 'mismatched-header\n' > "$test_root/log3/telemetry-2026-09-05-v4.tsv"
-# Run telemetry with MAX_SAMPLES=1, should create v4 or new and not truncate existing mismatched
+for suffix in '' -v2 -v3 -v4; do
+	printf 'mismatched-header-%s\n' "${suffix:--base}" > \
+		"$test_root/log3/telemetry-$legacy_day$suffix.tsv"
+done
+v4_before=$(sha256sum "$test_root/log3/telemetry-$legacy_day-v4.tsv" | awk '{print $1}')
+# Run telemetry with MAX_SAMPLES=1. It must create v5 and leave v4 untouched.
 POWER_SUPPLY_ROOT="$test_root/power" TYPEC_ROOT="$test_root/typec" PROC_ROOT="$test_root/proc" LOG_DIR="$test_root/log3" INTERVAL_SECONDS=1 MAX_SAMPLES=1 sh "$telemetry_script" 2>&1 | head -n 5
-# Ensure existing mismatched files still have their mismatched header (not truncated to empty)
-[ -s "$test_root/log3/telemetry-2026-09-05.tsv" ] || fail "telemetry truncated base"
-[ "$(head -n1 "$test_root/log3/telemetry-2026-09-05.tsv")" = "mismatched-header" ] || fail "telemetry truncated base header"
-[ -s "$test_root/log3/telemetry-2026-09-05-v4.tsv" ] || fail "telemetry v4 not handled"
+v5_log="$test_root/log3/telemetry-$legacy_day-v5.tsv"
+[ "$(sha256sum "$test_root/log3/telemetry-$legacy_day-v4.tsv" | awk '{print $1}')" = "$v4_before" ] ||
+	fail "telemetry modified mismatched v4"
+[ "$(wc -l < "$v5_log" | tr -d ' ')" = 2 ] ||
+	fail "telemetry did not create a header plus sample in v5"
+
+# ---- Type-C recovery: missing voltage files must use low capacity fallback ----
+typec_script="$repo_root/device-xiaomi-phoenix/extra-addon/phoenix-typec-recover.sh"
+mkdir -p "$test_root/power11/qcom_qg" "$test_root/power11/pm8150b-charger" \
+	"$test_root/typec11/port0" "$test_root/typec11/port0-partner" \
+	"$test_root/fakebin"
+printf '#!/bin/sh\nexit 0\n' > "$test_root/fakebin/flock"
+chmod +x "$test_root/fakebin/flock"
+printf '0\n' > "$test_root/power11/pm8150b-charger/online"
+printf 'Unknown\n' > "$test_root/power11/pm8150b-charger/status"
+printf '20\n' > "$test_root/power11/qcom_qg/capacity"
+printf '[source] sink\n' > "$test_root/typec11/port0/power_role"
+typec_trace=$(POWER_SUPPLY_ROOT="$test_root/power11" TYPEC_ROOT="$test_root/typec11" \
+	LOCK_FILE="$test_root/typec11/role.lock" PERSIST_SEC=0 \
+	PATH="$test_root/fakebin:$PATH" sh -x "$typec_script" 2>&1 || true)
+case "$typec_trace" in
+	*"+ echo sink"*) ;;
+	*) fail "missing voltage files did not use low-capacity Type-C fallback" ;;
+esac
 
 echo "battery tool tests: PASS"
