@@ -39,6 +39,28 @@ valid_int() {
 	esac
 }
 
+# Physically possible ranges for this cell.  Kept wide on purpose: a shutdown
+# guard must never discard a real low reading, only values no cell can produce.
+# QGauge's averaged channels are known to read garbage (6377865 uV, 5000003 uA)
+# for the first ~70 s after boot while the instantaneous channels are correct.
+PLAUSIBLE_MIN_UV=2000000
+PLAUSIBLE_MAX_UV=4800000
+PLAUSIBLE_MAX_UA=3000000
+PLAUSIBLE_MIN_DECIC=-200
+PLAUSIBLE_MAX_DECIC=800
+
+plausible_voltage() {
+	valid_uint "$1" && [ "$1" -ge "$PLAUSIBLE_MIN_UV" ] && [ "$1" -le "$PLAUSIBLE_MAX_UV" ]
+}
+plausible_current() {
+	valid_int "$1" || return 1
+	_a=$1; [ "$_a" -lt 0 ] && _a=$((0 - _a))
+	[ "$_a" -le "$PLAUSIBLE_MAX_UA" ]
+}
+plausible_temp() {
+	valid_int "$1" && [ "$1" -ge "$PLAUSIBLE_MIN_DECIC" ] && [ "$1" -le "$PLAUSIBLE_MAX_DECIC" ]
+}
+
 for value in "$INTERVAL_SECONDS" "$SHUTDOWN_VOLTAGE_UV" \
 	"$SHUTDOWN_SAMPLES" "$EMERGENCY_VOLTAGE_UV" "$EMERGENCY_SAMPLES" \
 	"$MAX_TEMP_DECIC" "$MAX_TEMP_SAMPLES" "$DRY_RUN" "$MAX_SAMPLES"; do
@@ -98,9 +120,13 @@ while :; do
 	voltage_avg_uv=$(read_value "$gauge/voltage_avg")
 	current_ua=$(read_value "$gauge/current_now")
 	temp_decic=$(read_value "$gauge/temp")
+	plausible_voltage "$voltage_now_uv" || voltage_now_uv=
+	plausible_voltage "$voltage_avg_uv" || voltage_avg_uv=
+	plausible_current "$current_ua" || current_ua=
+	plausible_temp "$temp_decic" || temp_decic=
 
 	# ---- Sensor validity + fault isolation counters (separate Vnow/Vavg) ----
-	if valid_uint "$temp_decic"; then
+	if valid_int "$temp_decic"; then
 		temp_invalid_count=0
 	else
 		temp_invalid_count=$((temp_invalid_count + 1))
@@ -155,7 +181,7 @@ while :; do
 	# ---- Independent protection channels ----
 
 	# Thermal channel: uses temp only, isolated from voltage/current validity
-	if valid_uint "$temp_decic"; then
+	if valid_int "$temp_decic"; then
 			if [ "$temp_decic" -ge "$MAX_TEMP_DECIC" ]; then
 				hot_count=$((hot_count + 1))
 			else

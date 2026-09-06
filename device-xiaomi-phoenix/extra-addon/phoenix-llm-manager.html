@@ -3,46 +3,229 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Phoenix LLM</title>
+  <title>Phoenix Console</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <header>
-    <div><span class="eyebrow">POCO X2 · SM7150</span><h1>Phoenix LLM</h1></div>
-    <div id="rail" class="rail"><span class="pill">Connecting…</span></div>
+    <div class="brand">
+      <span class="eyebrow" id="brandModel">POCO X2 · SM7150</span>
+      <h1>Phoenix Console</h1>
+    </div>
+    <div id="rail" class="rail"><span class="pill skel">Connecting…</span></div>
   </header>
-  <nav>
-    <button class="tab active" data-page="dashboard">Overview</button>
-    <button class="tab" data-page="battery">Battery</button>
-    <button class="tab" data-page="chat">Chat</button>
-    <button class="tab" data-page="logs">Logs</button>
-    <button class="tab" data-page="settings">Settings</button>
+
+  <nav id="nav" aria-label="Pages">
+    <button class="tab active" data-page="overview"><i>◈</i>Overview</button>
+    <button class="tab" data-page="power"><i>⚡</i>Power</button>
+    <button class="tab" data-page="runtime"><i>◎</i>Runtime</button>
+    <button class="tab" data-page="chat"><i>✎</i>Chat</button>
+    <span class="nav-sep">Device</span>
+    <button class="tab" data-page="tasks"><i>≣</i>Tasks</button>
+    <button class="tab" data-page="services"><i>⚙</i>Services</button>
+    <button class="tab" data-page="network"><i>⇅</i>Network</button>
+    <button class="tab" data-page="storage"><i>▤</i>Storage</button>
+    <button class="tab" data-page="thermal"><i>♨</i>Thermal</button>
+    <button class="tab" data-page="logs"><i>▥</i>Logs</button>
+    <span class="nav-sep"></span>
+    <button class="tab" data-page="settings"><i>⚒</i>Settings</button>
   </nav>
+
   <main>
-    <section id="dashboard" class="page active">
+    <!-- ================= OVERVIEW ================= -->
+    <section id="overview" class="page active">
+      <div id="ovHero" class="hero"><div><span class="eyebrow">Device</span><div class="headline skel-text">Loading…</div><div class="sub"></div></div><div class="hero-side"></div></div>
+      <div id="ovCards" class="cards"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">Live</span><h2>Last <span id="ovRangeLabel">15 minutes</span></h2></div>
+          <div class="controls" data-chart-group="overview">
+            <div class="seg" data-role="range"><button data-range="60">5m</button><button data-range="180" class="on">15m</button><button data-range="360">30m</button><button data-range="720">1h</button></div>
+            <label class="switch"><input type="checkbox" data-role="smooth"><span>Smooth</span></label>
+          </div>
+        </div>
+        <div class="multiples">
+          <div class="mini"><div class="mini-head"><span>CPU</span><strong data-latest="cpu">—</strong></div><canvas data-chart="ovCpu"></canvas></div>
+          <div class="mini"><div class="mini-head"><span>Memory used</span><strong data-latest="mem">—</strong></div><canvas data-chart="ovMem"></canvas></div>
+          <div class="mini"><div class="mini-head"><span>Hottest sensor</span><strong data-latest="temp">—</strong></div><canvas data-chart="ovTemp"></canvas></div>
+          <div class="mini"><div class="mini-head"><span>Battery current</span><strong data-latest="ibat">—</strong></div><canvas data-chart="ovIbat"></canvas></div>
+        </div>
+      </div>
+      <div class="split">
+        <div class="panel"><span class="eyebrow">Power path</span><h2>Adapter-first status</h2><div id="ovPower" class="kv"></div></div>
+        <div class="panel"><span class="eyebrow">Phoenix services</span><h2>Helpers</h2><div id="ovUnits" class="unit-grid"></div></div>
+      </div>
+    </section>
+
+    <!-- ================= POWER ================= -->
+    <section id="power" class="page">
+      <div class="panel">
+        <div class="panel-head"><div><span class="eyebrow">Power path</span><h2>Battery, charger and USB-C</h2></div><div id="powerVerdict"></div></div>
+        <div id="batteryWarnings" class="warnings"></div>
+        <div id="batteryCards" class="cards"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">Recent samples</span><h2>Cell and adapter</h2></div>
+          <div class="controls" data-chart-group="power">
+            <div class="seg" data-role="range"><button data-range="60">5m</button><button data-range="180" class="on">15m</button><button data-range="360">30m</button><button data-range="720">1h</button></div>
+            <label class="switch"><input type="checkbox" data-role="smooth"><span>Smooth</span></label>
+            <label class="switch"><input type="checkbox" data-role="zero"><span>Zero-based</span></label>
+          </div>
+        </div>
+        <div class="multiples">
+          <div class="mini"><div class="mini-head"><span>Voltage</span><strong data-latest="pv">—</strong></div><canvas data-chart="pwrV"></canvas></div>
+          <div class="mini"><div class="mini-head"><span>Current (+ charging)</span><strong data-latest="pi">—</strong></div><canvas data-chart="pwrI"></canvas></div>
+          <div class="mini"><div class="mini-head"><span>Cell temperature</span><strong data-latest="pt">—</strong></div><canvas data-chart="pwrT"></canvas></div>
+          <div class="mini"><div class="mini-head"><span>Adapter input</span><strong data-latest="pw">—</strong></div><canvas data-chart="pwrW"></canvas></div>
+        </div>
+      </div>
+      <div class="split">
+        <div class="panel"><h2>Limiter status</h2><pre id="powerStatus" class="mono-block">—</pre></div>
+        <div class="panel"><h2>Safety services</h2><div id="serviceTable" class="kv"></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><span class="eyebrow">Adapter tests</span><h2>Recorded adapter / cable runs</h2></div><span class="hint">Run <code>phoenix-adapter-test.sh --label NAME</code> as root on the phone</span></div>
+        <div class="table-wrap"><table id="adapterTable" class="table"><thead><tr><th>Label</th><th>Source</th><th class="num">Voc (V)</th><th class="num">R (Ω)</th><th class="num">Max W</th><th class="num">Idle mA</th><th class="num">Load mA</th><th>Verdict</th><th>When</th></tr></thead><tbody></tbody></table></div>
+        <div id="powerPath"></div>
+      </div>
+      <div class="split">
+        <div class="panel"><h2>Battery gauge</h2><div id="batteryTable" class="kv"></div></div>
+        <div class="panel"><h2>USB charger</h2><div id="chargerTable" class="kv"></div></div>
+      </div>
+      <div class="split">
+        <div class="panel"><h2>Type-C source</h2><div id="sourceTable" class="kv"></div></div>
+        <div class="panel"><h2>Historical telemetry</h2><pre id="telemetryReport" class="mono-block">—</pre></div>
+      </div>
+      <div class="note">Capacity is the current qcom_qg driver’s linear 3.4–4.4 V estimate, not measured electrochemical SOC. A zero learned full capacity means unavailable; it does not mean a zero-capacity battery. Readings outside the physical range of the cell are ignored.</div>
+    </section>
+
+    <!-- ================= RUNTIME (LLM) ================= -->
+    <section id="runtime" class="page">
       <div id="hero" class="hero"></div>
       <div id="systemCards" class="cards"></div>
-      <div class="panel"><div class="panel-head"><div><span class="eyebrow">Launch profiles</span><h2>One runtime, deliberate limits</h2></div><button id="stop" class="danger">Stop runtime</button></div><div id="profiles" class="profiles"></div></div>
-      <div class="panel"><span class="eyebrow">Thermal map</span><h2>SoC sensors</h2><div id="thermals" class="thermal-grid"></div></div>
+      <div class="panel"><div class="panel-head"><div><span class="eyebrow">Launch profiles</span><h2>One runtime, deliberate limits</h2></div><div class="btn-row"><button id="restart" class="ghost">Restart</button><button id="stop" class="danger">Stop runtime</button></div></div><div id="profiles" class="profiles"></div></div>
+      <div class="split">
+        <div class="panel"><span class="eyebrow">Backend</span><h2>TurboQuant</h2><div id="turboTable" class="kv"></div></div>
+        <div class="panel"><span class="eyebrow">Guards</span><h2>Preflight and thermal policy</h2><div id="guardTable" class="kv"></div></div>
+      </div>
     </section>
 
-    <section id="battery" class="page">
-      <div class="panel"><div class="panel-head"><div><span class="eyebrow">Power path</span><h2>Battery, charger and USB-C PD</h2></div><div id="batteryWarnings"></div></div><div id="batteryCards" class="cards"></div></div>
-      <div class="panel"><span class="eyebrow">Recent samples</span><h2>Voltage, current and temperature</h2><canvas id="batteryChart" width="1200" height="320"></canvas><div class="legend"><span class="volt">Voltage</span><span class="current">Current</span><span class="temp">Temperature</span></div></div>
-      <div class="split"><div class="panel"><h2>Battery gauge</h2><div id="batteryTable" class="kv"></div></div><div class="panel"><h2>USB charger</h2><div id="chargerTable" class="kv"></div></div></div>
-      <div class="split"><div class="panel"><h2>Type-C source</h2><div id="sourceTable" class="kv"></div></div><div class="panel"><h2>Safety services</h2><div id="serviceTable" class="kv"></div></div></div>
-      <div class="note">Capacity is the current qcom_qg driver’s linear 3.4–4.4 V estimate, not measured electrochemical SOC. A zero learned full capacity means unavailable; it does not mean a zero-capacity battery.</div>
-    </section>
-
+    <!-- ================= CHAT ================= -->
     <section id="chat" class="page">
-      <div class="panel chat"><span class="eyebrow">OpenAI-compatible runtime</span><h2>Quick inference test</h2><div id="messages" class="messages"><div class="message assistant">Start a profile, then send a prompt.</div></div><form id="chatForm"><textarea id="prompt" rows="4" placeholder="Ask Spark something…"></textarea><div class="form-row"><label>Max tokens <input id="maxTokens" type="number" value="128" min="1" max="2048"></label><label>Temperature <input id="temperature" type="number" value="0.7" min="0" max="2" step="0.1"></label><button>Send</button></div></form></div>
+      <div class="panel chat"><span class="eyebrow">OpenAI-compatible runtime</span><h2>Quick inference test</h2><div id="messages" class="messages"><div class="message assistant">Start a profile on the Runtime page, then send a prompt.</div></div><form id="chatForm"><textarea id="prompt" rows="4" placeholder="Ask Spark something…"></textarea><div class="form-row"><label>Max tokens <input id="maxTokens" type="number" value="128" min="1" max="2048"></label><label>Temperature <input id="temperature" type="number" value="0.7" min="0" max="2" step="0.1"></label><button id="sendBtn">Send</button></div></form></div>
     </section>
 
-    <section id="logs" class="page"><div class="panel"><div class="panel-head"><div><span class="eyebrow">llama-server</span><h2>Runtime log</h2></div><button id="refreshLogs">Refresh</button></div><pre id="logText">No log yet.</pre></div></section>
-    <section id="settings" class="page"><div class="panel narrow"><span class="eyebrow">Access</span><h2>Manager API token</h2><p>If <code>API_TOKEN</code> is configured on the phone, enter it here. It remains in this browser tab only.</p><input id="token" type="password" placeholder="X-API-Key"><button id="saveToken">Use token</button><div id="securityState" class="note"></div></div></section>
+    <!-- ================= TASKS ================= -->
+    <section id="tasks" class="page">
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">Scheduler</span><h2>CPU by cluster</h2></div>
+          <div class="controls" data-chart-group="tasks">
+            <div class="seg" data-role="range"><button data-range="60">5m</button><button data-range="180" class="on">15m</button><button data-range="360">30m</button><button data-range="720">1h</button></div>
+          </div>
+        </div>
+        <div class="chart-wrap tall"><canvas data-chart="taskCpu"></canvas></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">Processes</span><h2><span id="procCount">—</span> processes · <span id="procLoad">—</span></h2></div>
+          <div class="controls">
+            <input id="procSearch" type="search" placeholder="Filter name, user, pid…">
+            <div class="seg" id="procSort"><button data-sort="cpu" class="on">CPU</button><button data-sort="mem">Memory</button><button data-sort="time">Age</button><button data-sort="name">Name</button></div>
+            <select id="procLimit"><option value="30">Top 30</option><option value="60" selected>Top 60</option><option value="150">Top 150</option><option value="500">All</option></select>
+            <label class="switch"><input type="checkbox" id="procLive" checked><span>Live</span></label>
+          </div>
+        </div>
+        <div class="table-wrap"><table id="procTable" class="table"><thead><tr><th class="num">PID</th><th>Name</th><th>User</th><th class="num">CPU %</th><th class="num">RSS</th><th class="num">Thr</th><th>State</th><th class="num">Age</th><th>Command</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="note">The console runs unprivileged: it can only signal processes owned by its own user. Root daemons are listed for visibility but cannot be stopped from here.</div>
+      </div>
+    </section>
+
+    <!-- ================= SERVICES ================= -->
+    <section id="services" class="page">
+      <div class="panel"><span class="eyebrow">Phoenix</span><h2>Device helpers</h2><div id="phoenixUnits" class="unit-cards"></div></div>
+      <div class="panel">
+        <div class="panel-head"><div><span class="eyebrow">systemd</span><h2><span id="svcCount">—</span> services</h2></div><div class="controls"><input id="svcSearch" type="search" placeholder="Filter…"><div class="seg" id="svcState"><button data-state="" class="on">All</button><button data-state="active">Active</button><button data-state="failed">Failed</button><button data-state="inactive">Inactive</button></div></div></div>
+        <div class="table-wrap"><table id="svcTable" class="table"><thead><tr><th>Unit</th><th>Load</th><th>Active</th><th>Sub</th><th>Description</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="panel"><span class="eyebrow">systemd</span><h2>Timers</h2><div class="table-wrap"><table id="timerTable" class="table"><thead><tr><th>Timer</th><th>Activates</th><th>Next</th><th>Last</th></tr></thead><tbody></tbody></table></div></div>
+    </section>
+
+    <!-- ================= NETWORK ================= -->
+    <section id="network" class="page">
+      <div id="ifaceCards" class="cards iface"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">Throughput</span><h2><span id="netIfaceLabel">eth0</span></h2></div>
+          <div class="controls" data-chart-group="network">
+            <select id="netIface"></select>
+            <div class="seg" data-role="range"><button data-range="60">5m</button><button data-range="180" class="on">15m</button><button data-range="360">30m</button><button data-range="720">1h</button></div>
+            <label class="switch"><input type="checkbox" data-role="smooth"><span>Smooth</span></label>
+          </div>
+        </div>
+        <div class="chart-wrap tall"><canvas data-chart="netChart"></canvas></div>
+      </div>
+      <div class="panel"><span class="eyebrow">Sockets</span><h2>Listening TCP ports</h2><div class="table-wrap"><table id="portTable" class="table"><thead><tr><th class="num">Port</th><th>Proto</th><th>Bind</th><th>Known as</th></tr></thead><tbody></tbody></table></div></div>
+    </section>
+
+    <!-- ================= STORAGE ================= -->
+    <section id="storage" class="page">
+      <div id="mountCards" class="mounts"></div>
+      <div class="note">The root filesystem lives on <code>/dev/loop0p2</code> inside the combined GPT image flashed to <code>userdata</code>; the ESP is <code>/dev/loop0p1</code>. Firmware and model files count against the same UFS.</div>
+    </section>
+
+    <!-- ================= THERMAL ================= -->
+    <section id="thermal" class="page">
+      <div id="thermalCards" class="cards"></div>
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">History</span><h2>Temperature by group</h2></div>
+          <div class="controls" data-chart-group="thermal">
+            <div class="seg" data-role="range"><button data-range="60">5m</button><button data-range="180" class="on">15m</button><button data-range="360">30m</button><button data-range="720">1h</button></div>
+            <label class="switch"><input type="checkbox" data-role="smooth"><span>Smooth</span></label>
+          </div>
+        </div>
+        <div class="chart-wrap tall"><canvas data-chart="thermChart"></canvas></div>
+      </div>
+      <div class="split">
+        <div class="panel"><span class="eyebrow">cpufreq</span><h2>Frequency policies</h2><div id="freqTable"></div></div>
+        <div class="panel"><span class="eyebrow">Throttling</span><h2>Cooling devices</h2><div id="coolingTable"></div><div class="note">Kernel passive trips are 90 °C and 95 °C, critical 110 °C. A non-zero state means the kernel is actively throttling.</div></div>
+      </div>
+      <div class="panel"><span class="eyebrow">All sensors</span><h2>Thermal zones</h2><div id="thermals" class="thermal-grid"></div></div>
+    </section>
+
+    <!-- ================= LOGS ================= -->
+    <section id="logs" class="page">
+      <div class="panel">
+        <div class="panel-head">
+          <div><span class="eyebrow">Logs</span><h2>System journal</h2></div>
+          <div class="controls"><input id="jUnit" type="text" placeholder="unit (e.g. phoenix-charge-cap)"><select id="jPrio"><option value="">Any priority</option><option value="3">≤ error</option><option value="4">≤ warning</option><option value="6">≤ info</option></select><select id="jLines"><option>100</option><option>250</option><option>500</option></select><button id="jRefresh" class="ghost">Refresh</button></div>
+        </div>
+        <div id="journal" class="journal"></div>
+      </div>
+      <div class="panel"><div class="panel-head"><div><span class="eyebrow">llama-server</span><h2>Runtime log</h2></div><button id="refreshLogs" class="ghost">Refresh</button></div><pre id="logText" class="mono-block">No log yet.</pre></div>
+    </section>
+
+    <!-- ================= SETTINGS ================= -->
+    <section id="settings" class="page">
+      <div class="split">
+        <div class="panel"><span class="eyebrow">Access</span><h2>API token</h2><p class="muted">If <code>API_TOKEN</code> is configured on the phone, enter it here. It stays in this tab’s session storage only.</p><div class="form-inline"><input id="token" type="password" placeholder="X-API-Key"><button id="saveToken">Use token</button></div><div id="securityState" class="note"></div></div>
+        <div class="panel"><span class="eyebrow">Display</span><h2>Console behaviour</h2>
+          <div class="settings-grid">
+            <label>Poll interval<select id="setPoll"><option value="2000">2 s</option><option value="5000" selected>5 s</option><option value="10000">10 s</option><option value="30000">30 s</option></select></label>
+            <label>Default range<select id="setRange"><option value="60">5 min</option><option value="180" selected>15 min</option><option value="360">30 min</option><option value="720">1 hour</option></select></label>
+            <label>Motion<select id="setMotion"><option value="auto" selected>Follow system</option><option value="on">Always animate</option><option value="off">Reduce motion</option></select></label>
+            <label>Number tweening<select id="setTween"><option value="on" selected>On</option><option value="off">Off</option></select></label>
+          </div>
+        </div>
+      </div>
+      <div class="panel"><span class="eyebrow">About</span><h2>Phoenix Console</h2><div id="aboutTable" class="kv"></div></div>
+    </section>
   </main>
-  <div id="toast"></div>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+  <div id="toast" role="status"></div>
   <script src="/app.js"></script>
 </body>
 </html>
-

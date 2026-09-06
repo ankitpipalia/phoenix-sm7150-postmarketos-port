@@ -4,14 +4,30 @@
 # deployment uses eth* for the hub-attached LAN connection, and the
 # postmarketos default input chain otherwise has policy=drop, blocking the
 # dashboard at 7070 and anything else hosted on the device.
+#
+# Container networking (k3s cni0, podman podman0) is admitted here as well.
+# The podman rules exist because the shipped kernel lacks CONFIG_NFT_FIB_INET
+# and CONFIG_NFT_REDIR, so netavark runs with firewall_driver=none and cannot
+# install its own NAT; they are inert on an image without podman.
 table inet filter {
     chain input {
         iifname "eth*" accept comment "Allow incoming network traffic from Ethernet"
         iifname "cni0" ip saddr 10.42.0.0/16 tcp dport { 6443, 10250 } accept comment "Allow k3s pods to reach API and kubelet"
+        iifname "podman0" ip saddr 10.88.0.0/16 udp dport 53 accept comment "Allow podman containers to reach aardvark-dns on the bridge"
+        iifname "podman0" ip saddr 10.88.0.0/16 tcp dport 53 accept comment "Allow podman containers to reach aardvark-dns on the bridge"
     }
 
     chain forward {
         iifname "cni0" ip saddr 10.42.0.0/16 accept comment "Allow k3s pod egress"
         oifname "cni0" ip daddr 10.42.0.0/16 ct state established,related accept comment "Allow replies to k3s pods"
+        iifname "podman0" ip saddr 10.88.0.0/16 accept comment "Allow podman container egress"
+        oifname "podman0" ip daddr 10.88.0.0/16 ct state established,related accept comment "Allow replies to podman containers"
+    }
+}
+
+table inet phoenix_nat {
+    chain postrouting {
+        type nat hook postrouting priority srcnat; policy accept;
+        ip saddr 10.88.0.0/16 ip daddr != 10.88.0.0/16 masquerade comment "podman bridge egress (netavark firewall_driver=none)"
     }
 }

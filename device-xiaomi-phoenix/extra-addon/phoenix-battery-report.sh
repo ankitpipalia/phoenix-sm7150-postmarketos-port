@@ -55,6 +55,12 @@ NR == 1 {
 	uptime_s = uptime_value + 0
 	voltage = voltage_value + 0
 	current = current_value + 0
+	# Skip physically impossible rows (QGauge boot glitch, ADC faults) so one
+	# 6.38 V or 5 A ghost sample cannot skew the integration or the ranges.
+	if (voltage < 2500000 || voltage > 4800000 || current < -3000000 || current > 3000000) {
+		implausible++
+		next
+	}
 	if (!started) {
 		started = 1
 		min_v = max_v = voltage
@@ -110,6 +116,7 @@ END {
 	printf "integrated: %.2f h\n", integrated_s / 3600
 	printf "boot/uptime boundaries: %d\n", segments
 	printf "skipped gaps: %d\n", skipped_gaps
+	printf "implausible rows skipped: %d\n", implausible
 	printf "charge in: %.3f mAh / %.3f mWh\n", charge_in_mah, energy_in_mwh
 	printf "discharge out: %.3f mAh / %.3f mWh\n", discharge_out_mah, energy_out_mwh
 	printf "net: %.3f mAh / %.3f mWh\n", net_mah, net_mwh

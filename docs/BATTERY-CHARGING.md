@@ -161,18 +161,83 @@ or full capacity; that still requires a controlled charge/discharge experiment.
 
 ## Charge limiter
 
-`phoenix-charge-cap.sh` implements voltage hysteresis at 4.00-4.10 V by writing
-`auto` or `inhibit-charge` to the SMB `charge_behaviour` property. It verifies
-that inhibition sticks and that USB input remains online. It refuses to run on
-an old kernel instead of falling back to `STATUS`/`USBIN_SUSPEND`.
+The goal is laptop-style operation: run the phone from the adapter and keep the
+cell off its maximum resting voltage, so the battery serves as a UPS instead of
+a cycling energy store. `phoenix-charge-cap.sh` has two control modes and picks
+whichever the running kernel supports.
 
-Because current SOC is voltage-derived, this limiter should be understood as a
-useful voltage-correlated longevity guard, not a laboratory-accurate true-SOC
-controller.
+### Float-voltage mode (preferred, kernel patch 0018)
 
-The timer remains disabled by default. Do not enable it until patch 0010 is
-installed and a live upper-threshold test proves that the adapter continues to
-power the system while battery current approaches zero.
+When `pm8150b-charger/constant_charge_voltage` is writable, the limiter programs
+`STOP_VOLTAGE_UV` as the charger's float ceiling and leaves
+`charge_behaviour=auto`. `CHARGING_ENABLE_CMD_BIT` stays set, so the charger
+keeps regulating: the adapter carries the system, the cell charges to the
+ceiling and then rests there with taper current near zero, and no hysteresis is
+needed because the hardware holds the setpoint. `START_VOLTAGE_UV` is unused in
+this mode -- the PMIC's own recharge threshold applies.
+
+The register quantises to 7.5 mV from a 3.4875 V base and the driver truncates,
+so the readback sits at or just below the request; the limiter treats anything
+within one step as already programmed and does not rewrite it. `reset` restores
+the ceiling that was in place before the limiter lowered it. If firmware or
+another controller has already selected a lower ceiling, the limiter leaves it
+unchanged and does not claim ownership; it never raises an existing limit.
+
+### inhibit-charge mode (fallback, kernel patch 0010)
+
+Used only when the float property is absent. It applies voltage hysteresis at
+`START_VOLTAGE_UV`/`STOP_VOLTAGE_UV` by writing `auto` or `inhibit-charge`, and
+verifies both that inhibition sticks and that USB input stays online.
+
+**This mode does not achieve adapter-first operation on this hardware.** An A/B
+test on 2026-09-06 at 4.32 V measured -35 mA average with `inhibit-charge`
+against +32..+80 mA from the same source in `auto`: clearing the charge-enable
+bit lets USBIN settle near its 50 mA floor while the battery supplies most of
+the system load. The limiter therefore carries an adapter-deficit guard -- a
+sustained discharge above `DEFICIT_CURRENT_UA` while input is online releases the
+owned inhibit, arms a `DEFICIT_LOCKOUT_SECONDS` lockout, and logs at warning
+level. A missing or unreadable current channel proves nothing and never releases
+an inhibit.
+
+### Sensor plausibility
+
+QGauge's averaged channels (`voltage_avg`, `current_avg`) read constant garbage
+for roughly the first 70 seconds after boot — observed 6377865 uV and
+5000003 uA — while the instantaneous channels are correct. Every helper here
+checks a reading against the physical range of the cell before acting on it.
+The limiter and telemetry tools fall back to the instantaneous channel; the
+safety guard treats an implausible value as a missing sample so it feeds the
+sensor-fault counters rather than a shutdown threshold. Its window (2.0–4.8 V)
+is deliberately wider than the others so a genuine low reading is never
+discarded.
+
+### Verifying
+
+`phoenix-charge-cap status` reports the active control mode, the float ceiling,
+measured input power, the settled input current, and an explicit
+`OK` / `DEFICIT` / `ON BATTERY` verdict.
+
+For a real answer rather than a snapshot, use `phoenix-power-path-verify.sh`.
+Cell current and system draw both move with temperature, background work and
+AICL state, so a single reading proves nothing. The script walks load levels
+against charge behaviours, settling before each measurement and cooling between
+load steps, and reports per condition whether the cell was idle (adapter
+powering the SoC directly), supplying, or charging. `IDLE_BAND_UA` sets how
+close to zero counts as idle; the default is 10 mA.
+
+`phoenix-adapter-test.sh` characterises the supply path itself -- open-circuit
+voltage, series resistance, and the input-power ceiling -- and `--compare`
+tabulates every adapter/cable combination recorded so far. Rank by resistance
+and ceiling, not by charge current, because charge current depends on how full
+the cell already is.
+
+Note that this SoC is thermally bound well before it is power bound: two
+spinning cores take the hottest zone from 45 C to 88 C in about twenty seconds.
+Load-bearing conclusions about sustained operation need active cooling, and the
+verifier's abort guard exists for that reason.
+
+Because capacity is voltage-derived, these are voltage thresholds, not a
+calibrated 80% state of charge. The timer is disabled by default.
 
 ## Low-voltage and temperature guard
 

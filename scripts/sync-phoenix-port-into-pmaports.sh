@@ -239,6 +239,13 @@ ensure_kernel_config_symbol "$kernel_config" "CONFIG_DRM_PANEL_G7B_37_02_0A_DSC"
 # PM6150 charger driver (qcom_smbx) needed for battery charging support.
 ensure_kernel_config_symbol "$kernel_config" "CONFIG_CHARGER_QCOM_SMB2" "m"
 
+# Container networking. netavark's nftables ruleset uses "fib daddr type local"
+# (port forwarding) and "redirect" (container DNS); without these two the
+# upstream config makes every bridged podman/k3s container fail with
+# "Could not process rule: No such file or directory".
+ensure_kernel_config_symbol "$kernel_config" "CONFIG_NFT_FIB_INET" "m"
+ensure_kernel_config_symbol "$kernel_config" "CONFIG_NFT_REDIR" "m"
+
 # Keep checksums aligned with local patch/config mutations to avoid abuild
 # verification failures during pmbootstrap build.
 config_sum="$(sha512sum "$kernel_config" | awk '{print $1}')"

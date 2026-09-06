@@ -1,0 +1,129 @@
+From: Ankit Pipalia <ankit@example.com>
+Date: Sun, 6 Sep 2026 05:20:00 +0530
+Subject: [PATCH 18/18] power: supply: qcom_smbx: expose writable float voltage
+
+Phoenix is deployed as a permanently powered headless server, so its battery
+should behave as a UPS rather than as a cycling energy store.  The only charge
+control the driver exposes today is CHARGE_BEHAVIOUR, and inhibit-charge alone
+turns out to be fragile on a marginal input path: with about 1 ohm of series
+resistance between source and USBIN, inhibiting at a high cell voltage drops
+the input into repeated AICL collapse, so USBIN settles near its 50 mA floor and
+the battery supplies most of the system load.  Measured at 4.32 V that was
+-35 mA average.  Replacing the cable to bring the path to roughly 0.25-0.4 ohm
+restored the intended behaviour on the same adapter (+1.5 mA average), so
+inhibit-charge works when, and only when, the path has enough headroom for the
+charger to hold VSYS above the cell.
+
+Capping the charge voltage is the more robust control.  With
+CHARGING_ENABLE_CMD_BIT left set the charger keeps regulating rather than
+handing the rail back to the battery, and the cell rests at the programmed float
+voltage with taper current near zero - the behaviour laptop firmware implements
+for a "stop charging at 80%" setting.  It also removes the hysteresis cycle
+entirely: there is no discharge down to a resume threshold, because the cell is
+simply never charged above the ceiling.
+
+FLOAT_VOLTAGE_CFG is already programmed once at probe from the device tree
+battery description.  Expose it as CONSTANT_CHARGE_VOLTAGE so a policy daemon
+can lower it at runtime.  Writes are rejected outside
+[FLOAT_VOLTAGE_BASE_UV, voltage_max_design_uv]: userspace may lower the ceiling
+but must never raise it above the value the device tree declares safe, and the
+selector truncates so the programmed voltage never exceeds the request.
+
+Signed-off-by: Ankit Pipalia <ankit@example.com>
+---
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -70,6 +70,8 @@
+ 
+ #define FLOAT_VOLTAGE_CFG				0x70
+ #define FLOAT_VOLTAGE_SETTING_MASK			GENMASK(7, 0)
++#define FLOAT_VOLTAGE_BASE_UV				3487500
++#define FLOAT_VOLTAGE_STEP_UV				7500
+ 
+ #define SMB2_FG_UPDATE_CFG_2_SEL			0x7D
+ #define SMB2_SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT		BIT(2)
+@@ -318,6 +320,7 @@
+ 	POWER_SUPPLY_PROP_CURRENT_NOW,
+ 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+ 	POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR,
++	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
+ 	POWER_SUPPLY_PROP_STATUS,
+ 	POWER_SUPPLY_PROP_HEALTH,
+ 	POWER_SUPPLY_PROP_ONLINE,
+@@ -989,6 +992,48 @@
+ 		POWER_SUPPLY_CHARGE_BEHAVIOUR_AUTO :
+ 		POWER_SUPPLY_CHARGE_BEHAVIOUR_INHIBIT_CHARGE;
+ 	return 0;
++}
++
++static int smb_get_float_voltage(struct smb_chip *chip, int *val)
++{
++	unsigned int stat;
++	int rc;
++
++	rc = regmap_read(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG, &stat);
++	if (rc < 0)
++		return rc;
++
++	*val = FLOAT_VOLTAGE_BASE_UV +
++		(stat & FLOAT_VOLTAGE_SETTING_MASK) * FLOAT_VOLTAGE_STEP_UV;
++	return 0;
++}
++
++/*
++ * Userspace may lower the charge ceiling to keep the cell off its maximum
++ * resting voltage, but must never raise it above the device tree's declared
++ * design maximum.  The selector truncates, so the programmed voltage is always
++ * less than or equal to the requested one.
++ */
++static int smb_set_float_voltage(struct smb_chip *chip, int uv)
++{
++	unsigned int sel;
++
++	if (!chip->batt_info || chip->batt_info->voltage_max_design_uv <= 0)
++		return -ENODEV;
++
++	if (uv < FLOAT_VOLTAGE_BASE_UV ||
++	    uv > chip->batt_info->voltage_max_design_uv)
++		return -EINVAL;
++
++	sel = (uv - FLOAT_VOLTAGE_BASE_UV) / FLOAT_VOLTAGE_STEP_UV;
++	if (sel > FLOAT_VOLTAGE_SETTING_MASK)
++		return -EINVAL;
++
++	dev_info(chip->dev, "float voltage set to %u uV\n",
++		 FLOAT_VOLTAGE_BASE_UV + sel * FLOAT_VOLTAGE_STEP_UV);
++
++	return regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
++				  FLOAT_VOLTAGE_SETTING_MASK, sel);
+ }
+ 
+ static int smb_get_property(struct power_supply *psy,
+@@ -1013,6 +1058,8 @@
+ 					&val->intval);
+ 	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
+ 		return smb_get_charge_behaviour(chip, &val->intval);
++	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
++		return smb_get_float_voltage(chip, &val->intval);
+ 	case POWER_SUPPLY_PROP_ONLINE:
+ 		return smb_get_prop_usb_online(chip, &val->intval);
+ 	case POWER_SUPPLY_PROP_STATUS:
+@@ -1048,6 +1095,8 @@
+ 		default:
+ 			return -EINVAL;
+ 		}
++	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
++		return smb_set_float_voltage(chip, val->intval);
+ 	default:
+ 		dev_err(chip->dev, "No setter for property: %d\n", psp);
+ 		return -EINVAL;
+@@ -1059,6 +1108,7 @@
+ {
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_CHARGE_BEHAVIOUR:
++	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
+ 		return 1;
+ 	default:
+ 		return 0;
+-- 
+2.51.0

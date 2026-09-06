@@ -266,4 +266,257 @@ case "$typec_trace" in
 	*) fail "missing voltage files did not use low-capacity Type-C fallback" ;;
 esac
 
+# ---- Adapter-deficit guard: never hold an inhibit while the cell discharges ----
+mkdir -p "$test_root/power12/pm8150b-charger" "$test_root/power12/qcom_qg" \
+	"$test_root/run12" "$test_root/proc12"
+printf 'inhibit-charge\n' > "$test_root/power12/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power12/pm8150b-charger/online"
+printf '4200000\n' > "$test_root/power12/qcom_qg/voltage_avg"
+printf '4200000\n' > "$test_root/power12/qcom_qg/voltage_now"
+printf '5000.00 0.00\n' > "$test_root/proc12/uptime"
+touch "$test_root/run12/phoenix-charge-cap.inhibited"
+
+# A missing current channel proves nothing and must never release the inhibit.
+i=0
+while [ "$i" -lt 6 ]; do
+	POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+		PROC_ROOT="$test_root/proc12" "$cap_script"
+	i=$((i + 1))
+done
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "deficit guard released an inhibit without current evidence"
+[ -e "$test_root/run12/phoenix-charge-cap.inhibited" ] ||
+	fail "deficit guard cleared ownership without current evidence"
+
+# A small negative current is normal ripple and must not trip the guard.
+printf '%s\n' -5000 > "$test_root/power12/qcom_qg/current_avg"
+i=0
+while [ "$i" -lt 6 ]; do
+	POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+		PROC_ROOT="$test_root/proc12" "$cap_script"
+	i=$((i + 1))
+done
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "deficit guard tripped on sub-threshold ripple current"
+
+# Sustained discharge with input online must release after DEFICIT_SAMPLES.
+printf '%s\n' -50000 > "$test_root/power12/qcom_qg/current_avg"
+i=0
+while [ "$i" -lt 4 ]; do
+	POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+		PROC_ROOT="$test_root/proc12" "$cap_script"
+	i=$((i + 1))
+done
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "deficit guard released before reaching DEFICIT_SAMPLES"
+POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+	PROC_ROOT="$test_root/proc12" "$cap_script"
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "deficit guard did not release the inhibit under sustained discharge"
+[ ! -e "$test_root/run12/phoenix-charge-cap.inhibited" ] ||
+	fail "deficit release left the ownership marker behind"
+[ -e "$test_root/run12/phoenix-charge-cap.lockout" ] ||
+	fail "deficit release did not arm the lockout"
+
+# While the deficit persists the limiter must stay in auto, not re-inhibit.
+POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+	PROC_ROOT="$test_root/proc12" "$cap_script"
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "limiter re-inhibited while the adapter deficit persisted"
+
+# Once the adapter carries the load again and the lockout expires, re-arm.
+printf '%s\n' 60000 > "$test_root/power12/qcom_qg/current_avg"
+printf '9000.00 0.00\n' > "$test_root/proc12/uptime"
+POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+	PROC_ROOT="$test_root/proc12" "$cap_script"
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "limiter did not re-inhibit after the deficit cleared and lockout expired"
+
+# An unexpired lockout must still block re-arming.
+printf '%s\n' auto > "$test_root/power12/pm8150b-charger/charge_behaviour"
+rm -f "$test_root/run12/phoenix-charge-cap.inhibited"
+printf '9000\n' > "$test_root/run12/phoenix-charge-cap.lockout"
+POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+	PROC_ROOT="$test_root/proc12" "$cap_script"
+[ "$(cat "$test_root/power12/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "unexpired lockout did not block re-inhibiting"
+
+# reset must clear the deficit bookkeeping as well as ownership.
+touch "$test_root/run12/phoenix-charge-cap.inhibited"
+printf '3\n' > "$test_root/run12/phoenix-charge-cap.deficit"
+POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+	PROC_ROOT="$test_root/proc12" "$cap_script" reset
+for leftover in inhibited deficit lockout; do
+	[ ! -e "$test_root/run12/phoenix-charge-cap.$leftover" ] ||
+		fail "reset left phoenix-charge-cap.$leftover behind"
+done
+
+# status must report a deficit verdict and must not need a writable attribute.
+printf '4650000\n' > "$test_root/power12/pm8150b-charger/voltage_now"
+printf '340000\n' > "$test_root/power12/pm8150b-charger/current_now"
+printf '350000\n' > "$test_root/power12/pm8150b-charger/current_max"
+printf '%s\n' -50000 > "$test_root/power12/qcom_qg/current_avg"
+status_output=$(POWER_SUPPLY_ROOT="$test_root/power12" RUN_DIR="$test_root/run12" \
+	PROC_ROOT="$test_root/proc12" "$cap_script" status)
+case "$status_output" in
+	*"DEFICIT"*) ;;
+	*) fail "status did not report the adapter deficit verdict" ;;
+esac
+case "$status_output" in
+	*"settled input ICL: 350 mA"*) ;;
+	*) fail "status did not report the settled input current limit" ;;
+esac
+
+# ---- Float-voltage mode: cap the ceiling, keep the charger regulating ----
+mkdir -p "$test_root/power13/pm8150b-charger" "$test_root/power13/qcom_qg" \
+	"$test_root/run13" "$test_root/proc13"
+printf 'auto\n' > "$test_root/power13/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power13/pm8150b-charger/online"
+printf '4400000\n' > "$test_root/power13/pm8150b-charger/constant_charge_voltage"
+printf '4350000\n' > "$test_root/power13/qcom_qg/voltage_avg"
+printf '4350000\n' > "$test_root/power13/qcom_qg/voltage_now"
+printf '%s\n' -50000 > "$test_root/power13/qcom_qg/current_avg"
+printf '5000.00 0.00\n' > "$test_root/proc13/uptime"
+
+run13() {
+	POWER_SUPPLY_ROOT="$test_root/power13" RUN_DIR="$test_root/run13" \
+		PROC_ROOT="$test_root/proc13" "$cap_script" "$@"
+}
+
+run13
+[ "$(cat "$test_root/power13/pm8150b-charger/constant_charge_voltage")" = 4100000 ] ||
+	fail "float mode did not program the ceiling to STOP_VOLTAGE_UV"
+[ "$(cat "$test_root/power13/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "float mode inhibited charging instead of capping the ceiling"
+[ "$(cat "$test_root/run13/phoenix-charge-cap.float-original")" = 4400000 ] ||
+	fail "float mode did not record the original ceiling"
+[ ! -e "$test_root/run13/phoenix-charge-cap.inhibited" ] ||
+	fail "float mode created an inhibit ownership marker"
+
+# A lower ceiling imposed by firmware or another controller must never be
+# raised to our target, and must not create an ownership marker.
+run13 reset
+printf '4000000\n' > "$test_root/power13/pm8150b-charger/constant_charge_voltage"
+run13
+[ "$(cat "$test_root/power13/pm8150b-charger/constant_charge_voltage")" = 4000000 ] ||
+	fail "float mode raised a safer external ceiling"
+[ ! -e "$test_root/run13/phoenix-charge-cap.float-original" ] ||
+	fail "float mode claimed ownership of an external lower ceiling"
+printf '4400000\n' > "$test_root/power13/pm8150b-charger/constant_charge_voltage"
+run13
+
+# Idempotent: a readback inside one 7.5 mV step must not be reprogrammed.
+printf '4095000\n' > "$test_root/power13/pm8150b-charger/constant_charge_voltage"
+run13
+[ "$(cat "$test_root/power13/pm8150b-charger/constant_charge_voltage")" = 4095000 ] ||
+	fail "float mode rewrote a ceiling already within one quantisation step"
+
+# A legacy owned inhibit must be released once float control is available.
+printf '4400000\n' > "$test_root/power13/pm8150b-charger/constant_charge_voltage"
+printf 'inhibit-charge\n' > "$test_root/power13/pm8150b-charger/charge_behaviour"
+touch "$test_root/run13/phoenix-charge-cap.inhibited"
+run13
+[ "$(cat "$test_root/power13/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "float mode did not release a legacy inhibit"
+[ ! -e "$test_root/run13/phoenix-charge-cap.inhibited" ] ||
+	fail "float mode left the legacy ownership marker behind"
+
+# reset restores the ceiling we lowered.
+run13 reset
+[ "$(cat "$test_root/power13/pm8150b-charger/constant_charge_voltage")" = 4400000 ] ||
+	fail "reset did not restore the original float ceiling"
+[ ! -e "$test_root/run13/phoenix-charge-cap.float-original" ] ||
+	fail "reset left the float-original marker behind"
+
+# status must name the active control mode.
+case "$(run13 status)" in
+	*"float voltage (adapter-first)"*) ;;
+	*) fail "status did not report float-voltage control mode" ;;
+esac
+
+# ---- Plausibility: QGauge averaged channels read garbage for ~70s after boot ----
+mkdir -p "$test_root/power14/pm8150b-charger" "$test_root/power14/qcom_qg" \
+	"$test_root/run14" "$test_root/proc14"
+printf 'auto\n' > "$test_root/power14/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power14/pm8150b-charger/online"
+printf '5000.00 0.00\n' > "$test_root/proc14/uptime"
+run14() {
+	POWER_SUPPLY_ROOT="$test_root/power14" RUN_DIR="$test_root/run14" \
+		PROC_ROOT="$test_root/proc14" "$cap_script" "$@"
+}
+
+# The observed boot glitch: voltage_avg pinned at 6377865 while voltage_now is
+# real.  The limiter must act on voltage_now, not on 6.38 V.
+printf '6377865\n' > "$test_root/power14/qcom_qg/voltage_avg"
+printf '4300000\n' > "$test_root/power14/qcom_qg/voltage_now"
+run14
+[ "$(cat "$test_root/power14/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "limiter did not fall back to voltage_now when voltage_avg was implausible"
+case "$(run14 status)" in
+	*"voltage_avg reads 6377865 uV (implausible, ignored)"*) ;;
+	*) fail "status did not flag the implausible voltage_avg" ;;
+esac
+
+# Both channels implausible: take no action at all and leave state untouched.
+printf 'auto\n' > "$test_root/power14/pm8150b-charger/charge_behaviour"
+rm -f "$test_root/run14/phoenix-charge-cap.inhibited"
+printf '6377865\n' > "$test_root/power14/qcom_qg/voltage_avg"
+printf '99\n' > "$test_root/power14/qcom_qg/voltage_now"
+run14
+[ "$(cat "$test_root/power14/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "limiter acted with no plausible voltage available"
+[ ! -e "$test_root/run14/phoenix-charge-cap.inhibited" ] ||
+	fail "limiter created a marker with no plausible voltage available"
+
+# A +5 A ghost on current_avg must not mask a real discharge on current_now.
+printf '4300000\n' > "$test_root/power14/qcom_qg/voltage_avg"
+printf '4300000\n' > "$test_root/power14/qcom_qg/voltage_now"
+printf 'inhibit-charge\n' > "$test_root/power14/pm8150b-charger/charge_behaviour"
+touch "$test_root/run14/phoenix-charge-cap.inhibited"
+printf '5000003\n' > "$test_root/power14/qcom_qg/current_avg"
+printf '%s\n' -50000 > "$test_root/power14/qcom_qg/current_now"
+i=0; while [ "$i" -lt 5 ]; do run14; i=$((i + 1)); done
+[ "$(cat "$test_root/power14/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "implausible current_avg masked a genuine deficit on current_now"
+
+# After a deficit release there is no ownership marker but there is a lockout;
+# reset must still leave a clean slate.
+[ -e "$test_root/run14/phoenix-charge-cap.lockout" ] || fail "deficit release did not arm lockout"
+run14 reset
+[ ! -e "$test_root/run14/phoenix-charge-cap.lockout" ] ||
+	fail "reset left a lockout behind when no inhibit was owned"
+
+# ---- Safety guard: implausible readings count as invalid, never as danger ----
+mkdir -p "$test_root/power15/pm8150b-charger" "$test_root/power15/qcom_qg"
+printf '0\n' > "$test_root/power15/pm8150b-charger/online"
+printf '%s\n' -10000 > "$test_root/power15/qcom_qg/current_now"
+printf '300\n' > "$test_root/power15/qcom_qg/temp"
+safety15() {
+	POWER_SUPPLY_ROOT="$test_root/power15" INTERVAL_SECONDS=1 DRY_RUN=1 MAX_SAMPLES=1 \
+		EMERGENCY_SAMPLES=1 SHUTDOWN_SAMPLES=1 MAX_TEMP_SAMPLES=1 "$safety_script"
+}
+
+# 0.1 V is a glitch, not a dead cell: no emergency.
+printf '100000\n' > "$test_root/power15/qcom_qg/voltage_now"
+printf '4100000\n' > "$test_root/power15/qcom_qg/voltage_avg"
+[ -z "$(safety15)" ] || fail "safety guard shut down on an implausible 0.1 V reading"
+
+# 6.38 V on voltage_avg must not hide a real 3.30 V on voltage_now.
+printf '3300000\n' > "$test_root/power15/qcom_qg/voltage_now"
+printf '6377865\n' > "$test_root/power15/qcom_qg/voltage_avg"
+case "$(safety15)" in
+	*"below emergency threshold"*) ;;
+	*) fail "safety guard missed a genuine emergency behind an implausible voltage_avg" ;;
+esac
+
+# 200 C is a sensor fault, not a fire.
+printf '4100000\n' > "$test_root/power15/qcom_qg/voltage_now"
+printf '4100000\n' > "$test_root/power15/qcom_qg/voltage_avg"
+printf '2000\n' > "$test_root/power15/qcom_qg/temp"
+[ -z "$(safety15)" ] || fail "safety guard shut down on an implausible 200 C reading"
+
+# A cold cell below 0 C is a valid reading, not an invalid one.
+printf '%s\n' -50 > "$test_root/power15/qcom_qg/temp"
+[ -z "$(safety15)" ] || fail "safety guard mishandled a negative temperature"
+
 echo "battery tool tests: PASS"

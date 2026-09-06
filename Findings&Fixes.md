@@ -1377,7 +1377,438 @@ remained far below the TCPM-advertised 3 A, and battery current remained
 negative. Enabling the safety stack therefore succeeded, but it does not solve
 the separate ICL/source-capability problem described above.
 
+### Logic re-audit, boot-glitch fix and SoC configuration — 2026-09-06 16:00 UTC
+
+Every helper in `extra-addon/` was re-read end to end after the adapter work,
+and the live journal was checked against them. One finding changed the shape of
+the fixes.
+
+#### QGauge averaged channels are garbage for ~70 s after boot
+
+The charge-cap journal for the 15:17 boot reads
+`inhibited battery charging at 6377865uV` — 6.38 V, impossible for this cell.
+Telemetry for that boot shows the cause exactly: from uptime 13 s to about 70 s,
+`voltage_avg` is pinned at **6377865** and `current_avg` at **5000003**
+(5.000003 A), while `voltage_now` and `current_now` are correct throughout.
+The averaging registers are simply not initialised yet. `capacity` derives from
+the same channel and reads 100% for that minute.
+
+Every consumer that preferred the averaged channel was exposed. This one was
+harmless (the cell was above the ceiling anyway) but the same class of glitch in
+the other direction would count towards the safety guard's shutdown thresholds,
+and a single 6.38 V row would wreck the adapter load-line fit. Physical
+plausibility bounds are now applied before any reading is acted on:
+
+| consumer | bounds | on implausible |
+| --- | --- | --- |
+| `phoenix-charge-cap.sh` | 3.0–4.6 V, \|I\| ≤ 3 A | fall back to instantaneous channel; if neither is plausible, log and take no action |
+| `phoenix-battery-safety.sh` | 2.0–4.8 V, \|I\| ≤ 3 A, −20…80 °C | treated as a missing sample, feeding the existing sensor-fault counters — never as danger |
+| `phoenix-adapter-test.sh` / `phoenix-power-path-verify.sh` | Vin 3–13 V, cell 2.5–4.8 V, \|I\| ≤ 3 A | sample dropped; count reported |
+| `phoenix-battery-report.sh` | 2.5–4.8 V, \|I\| ≤ 3 A | row skipped; count reported |
+| `phoenix-llm-manager.py` | 2.5–4.8 V | dashboard/integration use `voltage_now` instead |
+
+The safety guard's window is deliberately the widest: a shutdown guard must
+never discard a genuine 2.5–3.5 V reading, only values no cell can produce. The
+regression suite now covers the recorded glitch values directly, including a
++5 A ghost on `current_avg` failing to mask a real −50 mA on `current_now`, and
+a 3.30 V emergency on `voltage_now` still firing behind a 6.38 V `voltage_avg`.
+
+#### Other defects fixed in the same pass
+
+- `phoenix-charge-cap.sh reset` exited at "no owned inhibit" without clearing
+  the deficit lockout, so after a guard release a reset left the limiter unable
+  to re-arm for up to 30 minutes. Bookkeeping is now cleared unconditionally.
+- An external return to `auto` dropped the ownership marker but kept a stale
+  deficit count that would have shortened the next inhibit's fuse.
+- `phoenix-battery-safety.sh` rejected any temperature below 0 °C as invalid
+  (`valid_uint` on a signed deci-Celsius field).
+- `phoenix-adapter-test.sh` left the SOURCE column blank when APSD failed to
+  classify the source; it now says `unresolved`.
+- `phoenix-llm-manager.py`: thermal zones are always millidegrees, so the
+  sub-1000 → ÷10 heuristic would have read a 0.95 °C zone as 95 °C and tripped
+  the critical guard; `/api/logs` slurped the whole append-only log into memory
+  on every dashboard poll; the log had no rotation; and nothing stopped a model
+  start on battery. Fixed with a fixed ÷1000 plus a −40…150 °C filter, a
+  seek-based tail, an 8 MiB rotate-on-start, and a preflight that refuses to
+  start unless the charger is online and the cell is above 3.70 V
+  (`REQUIRE_EXTERNAL_POWER`, `MIN_BATTERY_UV` in the conf).
+
+#### SoC configuration audit
+
+The request was to make sure nothing holds the SoC back. Nothing does:
+
+| item | state | note |
+| --- | --- | --- |
+| CPU governor | `performance`, both clusters | set by `tuned` profile `throughput-performance`, persists across boots |
+| CPU frequency | little ×6 at 1.80 GHz, big ×2 at 2.21 GHz | `scaling_max_freq` equals `cpuinfo_max_freq`; no cap |
+| GPU devfreq | `simple_ondemand`, 180–700 MHz | correct for a headless box; pinning 700 MHz would only add heat |
+| UFS devfreq | `simple_ondemand`, 50–240 MHz | fine |
+| cpuidle | `menu` | `teo` is not compiled in (`CONFIG_CPU_IDLE_GOV_TEO` unset); a kernel-config change, marginal gain |
+| Energy-aware scheduling | **off** | the kernel disables EAS unless every policy runs `schedutil`; the energy model itself is present (`cpu_capacity` 398/1024) |
+| thermal | passive trips 90 °C and 95 °C, critical 110 °C, cooling devices bound | intact; none engaged at idle (40–45 °C) |
+| memory | swappiness 10, 8 GiB zram (zstd) | set by tuned |
+| tuned verify | only `boost` fails | `cpufreq/boost` does not exist on this platform; everything else applied |
+
+Two consequences worth stating plainly. First, `performance` costs about
+0.17 W at idle over `schedutil` and turns EAS off; with adapter 2 carrying the
+system that is irrelevant to the battery, and for a server that wants latency
+it is the right trade. Second, the kernel does not begin throttling until
+90 °C, so the 85 °C abort in the test harnesses is the harness being
+conservative, not the SoC being limited. Under two spinning cores the SoC
+reaches 85 °C in about twenty seconds from 45 °C; sustained heavy compute needs
+active cooling regardless of any configuration.
+
+#### Adapter and cable verdict
+
+Keep **adapter 2 + cable 2**. Measured on it: series resistance 0.36 Ω, input
+ceiling 5.05 W, cell at +0.4 mA idle and +5.3 mA under one core with charging
+inhibited — the adapter powers the SoC directly and the cell does nothing across
+the server's real duty cycle. The only condition it does not cover is sustained
+heavy compute with the inhibit active (−58 mA under two `dd` workers), and the
+SoC cannot sustain that thermally in any case. A 9 V PD adapter direct to the
+phone would add margin but is not required for this deployment.
+
+### Phoenix Console — generic device dashboard — 2026-09-06 17:00 UTC
+
+The LLM manager has been reworked into **Phoenix Console**, a general device
+dashboard with the runtime as one section. Same unit, files and port
+(`phoenix-llm-manager.service`, `/usr/libexec/phoenix-llm-manager.py`, :7070);
+only the product name, the service `Description=` and the UI changed, so the
+preset, the enabled state and the package install paths are untouched.
+
+Pages: Overview (device hero, live tiles, four small-multiple sparklines,
+adapter-first status, helper units), Power (cell/adapter multiples, limiter
+status, safety services, recorded adapter/cable tests, power-path matrices,
+gauge/charger/Type-C tables, telemetry report), Runtime (profiles, stop/restart,
+TurboQuant and guard tables), Chat, Tasks (per-cluster CPU history, sortable
+and filterable process table with stop/kill), Services (Phoenix helper cards,
+filterable systemd services, timers), Network (interface cards with live rates,
+per-interface throughput chart, listening TCP ports), Storage (mount cards),
+Thermal (group cards, three-series history, cpufreq policies, cooling states,
+all zones), Logs (journal with unit/priority filter, runtime log), Settings
+(token, poll interval, default range, motion, tweening).
+
+New read-only endpoints: `/api/overview`, `/api/system`, `/api/system/history`,
+`/api/processes`, `/api/services`, `/api/network`, `/api/storage`,
+`/api/thermal`, `/api/journal`, `/api/power`. One mutation was added,
+`POST /api/processes/<pid>/signal`, which refuses pid ≤ 1, the console itself,
+and any process not owned by the service's own user — it runs unprivileged
+under the existing hardened unit, so root daemons are visible but untouchable.
+`systemctl`/`journalctl`/`ip` output is cached (5–10 s) so a dashboard polling
+every few seconds cannot fork-storm the phone; process CPU% is computed on the
+sampler's own 5 s clock so a request never blocks.
+
+Two chart rules were applied deliberately. The old battery chart overlaid
+voltage, current and temperature on one canvas with three implicit y-scales;
+that is the dual-axis anti-pattern and it is gone — every measure now has its
+own canvas (small multiples) with a crosshair tooltip, range presets, smoothing
+and a zero-based toggle. Series colours are the first three dark categorical
+slots (`#3987e5`, `#d95926`, `#199e70`) validated against this UI's chart
+surface `#0d1316` — all-pairs pass for three, fail for four, so no chart
+carries more than three series. Status green/amber/red are reserved for state
+and never used as a series. Motion follows `prefers-reduced-motion` with an
+override in Settings.
+
+The security posture is unchanged and still the main caveat: `API_TOKEN` is
+empty, so everything is open to the LAN behind the blanket `eth*` accept.
+
+### Podman + Portainer on the phone — 2026-09-06 17:10 UTC
+
+`podman` 6.1.1 (crun 1.28, netavark 2.1, aardvark-dns, conmon) is installed
+from Alpine edge with the `podman-systemd` subpackage, which supplies
+`podman.socket`/`podman.service` (socket-activated Docker-compatible REST API on
+`/run/podman/podman.sock`), `podman-restart.service`, and the Quadlet generator.
+Both `podman.socket` and `podman-restart.service` are enabled at boot.
+
+The web front end is **Portainer CE 2.45** at `https://192.168.1.101:9443`,
+run rootful as a Quadlet unit (`/etc/containers/systemd/portainer.container` →
+`portainer.service`, `Restart=always`, `WantedBy=multi-user.target`). It uses
+**host networking**, mounts the podman socket as `/var/run/docker.sock`, keeps
+state in the `portainer_data` volume, has HTTP disabled (HTTPS 9443 only, plus
+the 8000 edge-tunnel listener), and its admin account is pre-seeded from a
+root-only random password at `/etc/portainer/admin-password`. Login via
+`POST /api/auth` was verified. A `podman stop portainer` behind systemd's back
+was recovered by systemd within seconds.
+
+#### The shipped kernel cannot run netavark's default firewall
+
+Every bridged container failed with
+`netavark: nftables error: "nft" did not return successfully ... Could not
+process rule: No such file or directory`. Adding netavark's rule shapes one at
+a time isolated two expressions: `fib daddr type local` (needs
+`nft_fib_inet`) and `redirect` (needs `nft_redir`). The kernel config has
+`CONFIG_NFT_FIB_INET` and `CONFIG_NFT_REDIR` **not set**; masquerade, dnat,
+marks and NAT chains all work. netavark 2.x has no iptables driver
+(`Must provide a valid firewall backend, got iptables`), so that escape hatch
+is gone too.
+
+Two fixes, one durable and one live:
+
+- **Durable (repo):** `sync-phoenix-port-into-pmaports.sh` now enforces
+  `CONFIG_NFT_FIB_INET=m` and `CONFIG_NFT_REDIR=m` alongside the panel and
+  charger symbols, so the next kernel build is container-ready. CLAUDE.md lists
+  them. Because only two modules are added and the rest of the config is
+  unchanged, the two `.ko.zst` from that build can be dropped into the running
+  kernel's module tree without a reflash.
+- **Live (device):** `/etc/containers/containers.conf.d/10-phoenix.conf` sets
+  `firewall_driver = "none"`; netavark still creates `podman0`, veth pairs and
+  addresses, and NAT/forwarding for `10.88.0.0/16` come from the device
+  package's `52_phoenix_eth_trust.nft` (input: DNS to aardvark only; forward:
+  egress + established replies; a `phoenix_nat` table with masquerade). A
+  bridged `alpine:3.20` container resolves names and reaches the internet.
+  Consequence: **published ports on bridged containers do not work** until the
+  kernel has the two symbols — anything that must listen uses `Network=host`,
+  which is why Portainer does.
+
+One more platform fact learned on the way: Alpine's `crun` is built without
+libsystemd, so `cgroup_manager = "systemd"` fails plain `podman run` with
+`crun: systemd not supported`. The default `cgroupfs` is required; Quadlet units
+are unaffected because they run with `--cgroups=split`.
+
+#### Reboot verification — 2026-09-06 17:09 UTC
+
+A full `systemctl reboot` (boot id `b32ad85d…` → `9dc86f72…`) came back in about
+85 s with `eth0` up. At 82 s uptime: `podman.socket` and `podman-restart.service`
+active and enabled; `portainer.service` active with `NRestarts=0` and the
+container `Up 55 seconds`; nftables active with the `phoenix_nat` masquerade
+rule and both `podman0` input rules loaded; console, safety guard and charge-cap
+timer active; zero failed units; no ext4 journal recovery (clean shutdown).
+Portainer answered on 9443 from the workstation immediately after.
+
+Security note: the podman socket stays `root:root 0660` and was deliberately
+**not** widened to the `user` account — access to it is root-equivalent, and the
+Phoenix Console still has no API token. Portainer brings its own authentication,
+which is why it, rather than a raw TCP API listener, is the "web service".
+Podman is installed on the device, not baked into the ROM image; packaging it
+into `device-xiaomi-phoenix` is a separate decision.
+
 ## Production-safety validation matrix
+
+### Adapter-first operation: subsequent register audit
+
+The requested laptop-style policy is already implemented by the enabled
+voltage charge cap: inhibit battery charging at 4.10 V, retain USB input,
+and allow charging again at 4.00 V. These are voltage thresholds, not a
+calibrated 80% SOC setting. Battery backup remains connected; charge inhibition
+does not disable battery discharge during an outage or insufficient input.
+
+A subsequent privileged read corrects the earlier claim that the low sysfs
+current limit proves a driver policy failure. The boot log selected
+`USB ICL 1500000 uA ... APSD DCP`; register `0x1370=0x1e` programs 1.5 A,
+`0x1365=0xb5` retains the high-current override, and `0x1340=0x00` leaves
+USB input unsuspended. The SMB5 `current_max` getter reads settled AICL
+status, which can differ from the programmed ceiling. Therefore low settled
+current alone does not establish a missing notifier or failed policy write.
+
+A controlled A/B test on 2026-09-06 first appeared to isolate the control mode;
+the later cable A/B test below refined that conclusion to input-path headroom,
+not an inherent failure of the inhibit mechanism or the driver's ICL policy.
+
+First, `pm8150b-charger/current_max` is a *measurement*, not an active limit.
+Across the sawtooth it tracks `current_now` quantised to the 50 mA AICL step:
+
+| reported `current_max` | 50 | 100 | 150 | 250 | 350 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| measured `current_now` (mA) | 46.9 | 96.7 | 147.3 | 246.1 | 343.5 |
+
+Second, reducing system load does not reduce the drain. Moving both CPU
+policies from `performance` to `schedutil` cut the system load 0.739 W -> 0.568 W
+(-23%), but mean battery power stayed at -0.175 W / -0.178 W because the input
+fell by the same amount (0.564 W -> 0.389 W) and time spent at the 50 mA floor
+*rose* from 64% to 78%. A power-budget shortfall would not behave this way.
+
+Third, the decisive test: releasing the inhibit while leaving everything else
+identical. With `charge_behaviour=auto`, the same source immediately reported
+`Charging`, drew 296-446 mA, and pushed **+32 to +80 mA into the battery** at
+4.32 V, with cell voltage climbing 4.313 V -> 4.332 V over 90 seconds. Restoring
+the inhibit returned the system to a net discharge.
+
+The immediate conclusion drawn from this was that `inhibit-charge` itself causes
+the discharge. **A later cable swap showed that was too strong** -- see the
+cable comparison below. The accurate statement is that inhibiting at a high cell
+voltage collapses USBIN *when the input path is marginal*: the charger can no
+longer hold VSYS above the cell, the input settles near its 50 mA floor, and the
+battery supplies most of the load. The mechanism intended to protect the cell
+was cycling it instead, on the same trajectory as the August 23 deep discharge,
+with the only difference being that the shutdown guard is now armed.
+
+Two consequences follow.
+
+`inhibit-charge` is not a robust laptop-style control across marginal input
+paths on this hardware. New kernel patch 0018 exposes `constant_charge_voltage`
+(`FLOAT_VOLTAGE_CFG`, 7.5 mV/step from 3.4875 V) as a writable property, with
+writes rejected outside `[3487500, voltage_max_design_uv]` so userspace can
+lower the ceiling but never raise it above the device tree maximum. Capping the
+float voltage leaves `CHARGING_ENABLE_CMD_BIT` set, so the charger keeps
+regulating and the cell simply rests at the ceiling with taper current near
+zero. `phoenix-charge-cap.sh` now prefers this mode automatically and falls back
+to `inhibit-charge` only when the property is absent. Patch 0018 applies cleanly
+to the 7.1_rc3 tree with patches 0001-0017 applied; it is **not yet compiled or
+hardware-tested**. The userspace policy is lower-only too: if firmware or
+another controller already selected a ceiling below its target, it preserves
+that safer limit and does not claim ownership.
+
+Until patch 0018 is installed, the fallback path carries an adapter-deficit
+guard: a sustained discharge above `DEFICIT_CURRENT_UA` while the charger
+reports input online releases the owned inhibit, arms a lockout for
+`DEFICIT_LOCKOUT_SECONDS`, and logs at warning level. A missing or unreadable
+current channel proves nothing and never releases an inhibit. `phoenix-charge-cap
+status` reports the active control mode, the input power, and an explicit
+OK/DEFICIT/ON BATTERY verdict.
+
+Note also that the 9 V PD contract observed on 2026-09-05 is gone: the attached
+dock now enumerates as a non-PD path (`usb_power_delivery_revision 0.0`,
+`usb_type [DCP]`), so the source is limited to 5 V. That reduces available
+headroom but, per the A/B test above, is not what caused the discharge.
+
+#### Hardware validation of the deficit guard — 2026-09-06 04:57 UTC
+
+The updated `phoenix-charge-cap.sh` was deployed to `/usr/libexec` on the live
+device (r27 package otherwise unchanged; the previous script is preserved at
+`/var/backups/phoenix-charge-cap.sh.r27`). The guard behaved as designed:
+
+```text
+run 1-4  auto [inhibit-charge]   marker present   deficit count 1..4
+run 5    [auto] inhibit-charge   marker gone      lockout armed
+journal  adapter cannot carry the system load (battery -39367uA at 4289799uV
+         with input online); released inhibit after 5 samples
+```
+
+Forty seconds after the release, measured input rose from 941 mW to 1609 mW,
+the input current settled at 350 mA instead of the 50 mA floor, battery current
+improved from -39 mA to -14 mA, and `phoenix-charge-cap status` changed its
+verdict from `DEFICIT` to `OK`. This is direct hardware confirmation that the
+inhibit, not the supply path, was starving USBIN.
+
+The float register was also read directly to confirm patch 0018's encoding:
+`/sys/kernel/debug/regmap/0-00/registers` reports `1070: 79`, i.e. selector 121
+= 3487500 + 121 x 7500 = 4,395,000 uV, matching the value the driver programs at
+probe from `voltage-max-design`. `REGMAP_ALLOW_WRITE_DEBUGFS` is not enabled, so
+the float ceiling cannot be lowered for a live experiment without building the
+kernel; patch 0018 remains compile-and-flash work.
+
+#### Cable comparison isolates the real variable — 2026-09-06 15:00 UTC
+
+Swapping only the cable, same adapter and same dock, changed the result
+decisively. `phoenix-adapter-test.sh` records both runs:
+
+| | cable 1 | cable 2 |
+| --- | ---: | ---: |
+| series resistance to USBIN | 1.031 ohm (least-squares fit) | 0.25-0.41 ohm (estimate) |
+| USBIN voltage at ~450 mA | 4.545 V | 4.858 V |
+| input power ceiling | 2.47 W | 2.43 W |
+| battery current, idle, charging | +35.1 mA | +71.9 mA |
+| battery current, under load | -147.3 mA | -109.4 mA |
+| **battery current while inhibited** | **-35 mA** | **+1.5 mA** |
+
+The last row is the one that matters. With cable 2 and `charge_behaviour=
+inhibit-charge`, a 60-second sample measured +1.5 mA average, with instantaneous
+values between -0.15 mA and +0.9 mA, while USBIN carried 220-496 mA at
+4.85-5.03 V. That is laptop-style adapter-first operation working as intended on
+the existing kernel: the adapter carries the entire system load and the cell is
+neither charged nor discharged.
+
+So `inhibit-charge` was never inherently broken. It needs enough path headroom
+for the charger to hold VSYS above the cell, and roughly 1 ohm did not provide
+it. The earlier A/B test was real but attributed the cause to the mechanism
+rather than to the path.
+
+Cable 2 also changed the ICL regime. APSD no longer resolves a charger type
+(`usb_type` reads empty, `APSD unresolved` in dmesg), so the driver takes the
+guarded TCPM fallback and programs 1.5 A (`0x1370=0x1e`, override `0x1365=0xb5`)
+while AICL settles at 500 mA (`0x1108=0x0a`). Since the path holds 4.86 V at
+450 mA, the ~2.4 W ceiling is now the dock's own power budget rather than the
+cable or the driver. A brief flap between `safe default` and `TCPM fallback`
+during re-enumeration settled on its own within 20 seconds and has not recurred.
+
+#### Adapter comparison — 2026-09-06 15:20 UTC
+
+A second adapter was then tested on the same cable 2. `phoenix-adapter-test.sh`
+results, plus separate measurements taken with `charge_behaviour=inhibit-charge`:
+
+| | adapter 1 + cable 1 | adapter 1 + cable 2 | **adapter 2 + cable 2** |
+| --- | ---: | ---: | ---: |
+| series resistance | 1.031 ohm (fit) | 0.25-0.41 ohm (est) | 0.359 ohm (fit) |
+| open-circuit voltage | 5.062 V | - | 4.996 V |
+| input power ceiling | 2.47 W | 2.43 W | **5.05 W** |
+| battery, idle, auto | +35.1 mA | +71.9 mA | **+200.5 mA** |
+| battery, load, auto | -147.3 mA | -109.4 mA | **+21.3 mA** |
+| battery, idle, inhibited | -35 mA | +1.3 mA | **+0.49 mA** |
+| battery, load, inhibited | - | - | **-58 mA** |
+
+Adapter 2 is the clear winner and is the recommended configuration. It roughly
+doubles deliverable power: APSD classifies it as DCP, so the driver takes the
+full 1.5 A ceiling (`0x1370=0x1e`, override `0x1365=0xb5`) and the path actually
+sustains about 1 A, against 500 mA for adapter 1 through the dock. Cable 2
+separately fixed the series resistance. The two fixes are independent and both
+were needed.
+
+With adapter 2 the server goal is met for its normal state: idle with charging
+inhibited holds the cell at +0.49 mA over 120 seconds while the adapter supplies
+1.23 W, so the battery is neither charged nor discharged.
+
+One limitation remains and it is the same mechanism seen throughout. Under
+sustained CPU load with `inhibit-charge` active, USBIN draws only 740 mA /
+3.43 W and the battery supplies the balance at -58 mA, whereas the same load in
+`auto` drew about 1 A / 4.83 W and left the battery at +21.3 mA. Inhibiting
+consistently reduces how much the input delivers; a stronger adapter shrinks the
+shortfall (-147 mA -> -58 mA) but does not remove it. For a mostly idle server
+this is acceptable. Eliminating it is what patch 0018 is for, since float
+capping leaves the charger regulating instead of handing the rail back to the
+cell.
+
+#### Power-path verification matrix — 2026-09-06 15:30 UTC
+
+`phoenix-power-path-verify.sh` walks load levels against charge behaviours,
+settling before each measurement and cooling to 45 C between load steps, so no
+row is contaminated by the previous row's heat. On adapter 2 + cable 2:
+
+| condition | behaviour | cell mA | min | max | input W | verdict |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| idle | inhibit-charge | **+0.4** | -0.2 | +0.9 | 1.59 | **BATTERY IDLE** |
+| idle | auto | +193.0 | +147.9 | +249.9 | 4.48 | CHARGING |
+| light (1 core) | inhibit-charge | **+5.3** | +0.0 | +20.1 | 2.94 | **BATTERY IDLE** |
+| light (1 core) | auto | +170.8 | +144.7 | +191.0 | 5.43 | CHARGING |
+| medium (2 cores) | inhibit-charge | thermal limit before first sample | | | | - |
+| medium (2 cores) | auto | thermal limit before first sample | | | | - |
+
+This confirms the intended behaviour directly. With charging inhibited the cell
+sits at +0.4 mA at idle and +5.3 mA under one core of load, while adapter input
+scales 1.59 W -> 2.94 W to absorb the extra demand. The battery is neither
+charged nor discharged: the adapter is powering the SoC and peripherals, and the
+cell is simply along for the ride. The `auto` rows are the control -- same
+conditions, but +170 to +193 mA flows into the cell and input rises to
+4.5-5.4 W, which is the charge current the inhibit removes.
+
+The verified envelope is idle through one core. Both two-core rows crossed the
+85 C abort during their settle window, so they could not be sampled at all. An
+earlier ad-hoc measurement under two continuous `dd` workers (a heavier load
+than one spinning core) recorded -58 mA with inhibit active, so the cell does
+begin supplying somewhere above this envelope. Thermals, not the power path,
+are what stop the measurement.
+
+Thermals bound these tests rather than power: two `dd` workers took the hottest
+zone from 41 C to 86 C in 30 seconds. Sustained full-load operation is not
+viable on this hardware without active cooling, which also bounds any llama.cpp
+plan.
+
+Practical consequence: patch 0018 is no longer the only route to the goal, but it
+remains the better one. Float capping removes the hysteresis cycle entirely and
+does not depend on path headroom, whereas the inhibit path now works only while
+the cable stays good. The adapter-deficit guard remains valuable precisely
+because it catches the cable-1 case automatically.
+
+Both CPU policies were also moved from `performance` to `schedutil` for the
+measurement, which cut system load from 0.739 W to 0.568 W but did not by itself
+change the battery deficit. **That change did not persist**: `tuned` runs the
+`throughput-performance` profile and re-applied `performance` at the next boot.
+See the SoC configuration audit below; `performance` is the intended state.
+
+Interim expectation until patch 0018 is installed: with the deficit guard active
+the limiter will keep the charger in `auto`, so the cell will rest near the
+device tree float of about 4.4 V rather than at the intended 4.10 V ceiling.
+That is a deliberate trade -- a high resting voltage ages the cell, but draining
+it to the shutdown guard is worse -- and it is exactly what patch 0018 removes.
 
 | Test | Required result |
 | --- | --- |

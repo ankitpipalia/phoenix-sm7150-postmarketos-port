@@ -1,5 +1,5 @@
 [Unit]
-Description=Phoenix LLM control and battery dashboard
+Description=Phoenix Console: device, power, runtime and battery dashboard
 After=network-online.target
 Wants=network-online.target
 
