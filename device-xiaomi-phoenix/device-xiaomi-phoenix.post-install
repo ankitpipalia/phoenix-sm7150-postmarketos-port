@@ -35,6 +35,7 @@ if command -v systemctl >/dev/null 2>&1; then
 	systemctl disable --now greetd.service >/dev/null 2>&1 || true
 	systemctl enable --now phoenix-screen-off.service >/dev/null 2>&1 || true
 	systemctl enable phoenix-usb-host-wake.service >/dev/null 2>&1 || true
+	systemctl enable --now phoenix-llm-manager.service >/dev/null 2>&1 || true
 fi
 
 # Compile dconf defaults so notification policy is active after install.

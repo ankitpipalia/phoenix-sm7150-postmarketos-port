@@ -4,6 +4,7 @@
 disable greetd.service
 enable phoenix-screen-off.service
 enable phoenix-usb-host-wake.service
+enable phoenix-llm-manager.service
 
 # Preserve administrator opt-in state for the remaining optional helpers.
 ignore phoenix-charge-cap.timer

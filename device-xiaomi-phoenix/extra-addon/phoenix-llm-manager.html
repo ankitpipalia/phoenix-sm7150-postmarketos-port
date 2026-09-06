@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Phoenix LLM</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div><span class="eyebrow">POCO X2 · SM7150</span><h1>Phoenix LLM</h1></div>
+    <div id="rail" class="rail"><span class="pill">Connecting…</span></div>
+  </header>
+  <nav>
+    <button class="tab active" data-page="dashboard">Overview</button>
+    <button class="tab" data-page="battery">Battery</button>
+    <button class="tab" data-page="chat">Chat</button>
+    <button class="tab" data-page="logs">Logs</button>
+    <button class="tab" data-page="settings">Settings</button>
+  </nav>
+  <main>
+    <section id="dashboard" class="page active">
+      <div id="hero" class="hero"></div>
+      <div id="systemCards" class="cards"></div>
+      <div class="panel"><div class="panel-head"><div><span class="eyebrow">Launch profiles</span><h2>One runtime, deliberate limits</h2></div><button id="stop" class="danger">Stop runtime</button></div><div id="profiles" class="profiles"></div></div>
+      <div class="panel"><span class="eyebrow">Thermal map</span><h2>SoC sensors</h2><div id="thermals" class="thermal-grid"></div></div>
+    </section>
+
+    <section id="battery" class="page">
+      <div class="panel"><div class="panel-head"><div><span class="eyebrow">Power path</span><h2>Battery, charger and USB-C PD</h2></div><div id="batteryWarnings"></div></div><div id="batteryCards" class="cards"></div></div>
+      <div class="panel"><span class="eyebrow">Recent samples</span><h2>Voltage, current and temperature</h2><canvas id="batteryChart" width="1200" height="320"></canvas><div class="legend"><span class="volt">Voltage</span><span class="current">Current</span><span class="temp">Temperature</span></div></div>
+      <div class="split"><div class="panel"><h2>Battery gauge</h2><div id="batteryTable" class="kv"></div></div><div class="panel"><h2>USB charger</h2><div id="chargerTable" class="kv"></div></div></div>
+      <div class="split"><div class="panel"><h2>Type-C source</h2><div id="sourceTable" class="kv"></div></div><div class="panel"><h2>Safety services</h2><div id="serviceTable" class="kv"></div></div></div>
+      <div class="note">Capacity is the current qcom_qg driver’s linear 3.4–4.4 V estimate, not measured electrochemical SOC. A zero learned full capacity means unavailable; it does not mean a zero-capacity battery.</div>
+    </section>
+
+    <section id="chat" class="page">
+      <div class="panel chat"><span class="eyebrow">OpenAI-compatible runtime</span><h2>Quick inference test</h2><div id="messages" class="messages"><div class="message assistant">Start a profile, then send a prompt.</div></div><form id="chatForm"><textarea id="prompt" rows="4" placeholder="Ask Spark something…"></textarea><div class="form-row"><label>Max tokens <input id="maxTokens" type="number" value="128" min="1" max="2048"></label><label>Temperature <input id="temperature" type="number" value="0.7" min="0" max="2" step="0.1"></label><button>Send</button></div></form></div>
+    </section>
+
+    <section id="logs" class="page"><div class="panel"><div class="panel-head"><div><span class="eyebrow">llama-server</span><h2>Runtime log</h2></div><button id="refreshLogs">Refresh</button></div><pre id="logText">No log yet.</pre></div></section>
+    <section id="settings" class="page"><div class="panel narrow"><span class="eyebrow">Access</span><h2>Manager API token</h2><p>If <code>API_TOKEN</code> is configured on the phone, enter it here. It remains in this browser tab only.</p><input id="token" type="password" placeholder="X-API-Key"><button id="saveToken">Use token</button><div id="securityState" class="note"></div></div></section>
+  </main>
+  <div id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
+

@@ -1257,6 +1257,100 @@ longer actively cooled test establishes a safe sustained profile. Maximum
 production performance must be selected after thermal equilibrium, likely with
 a dynamic governor and explicit concurrency of one.
 
+### 29. TurboQuant Turbo4 and Phoenix LLM manager — 2026-09-06
+
+Turbo4 is now implemented and live-tested for Spark-X2.5. This is **true
+TurboQuant K/V-cache compression**, not an alias for llama.cpp's ordinary
+`q4_0` cache and not a re-quantization of the model weights. The model remains
+the requested Q8_0 GGUF. The runtime combines:
+
+```text
+TheTom/llama-cpp-turboquant  4a54c52074e6b1a0c585ebd7ee98cb0555ef060d
+XHToken Spark2.5 support     6498507f5 through ae75169ae
+combined build identity      b10723-1698a2f5e
+target                       Alpine aarch64, ARMv8.2 dotprod/FP16, OpenBLAS
+```
+
+The reproducible Docker builder is
+`scripts/build-llama-spark-turboquant.sh`. It keeps the distribution llama.cpp
+and the earlier XHToken-only build untouched and installs the combined runtime
+alongside them under `/home/user/opt/llama-spark-turboquant/bin`.
+
+The Vulkan backend is deliberately disabled in this build. TurboQuant's fork
+does contain evolving Vulkan kernels, but the phone's prior Spark validation
+already proved that Adreno 618/Turnip lacks the 16-bit-storage feature required
+by this runtime. Upstream llama.cpp also has open/closed reports of Turbo4
+`SET_ROWS` failures in experimental Vulkan TurboQuant forks. CPU Turbo4 is the
+validated path; labelling this profile as GPU accelerated would be incorrect.
+
+#### Live Turbo4 results
+
+| Test | Result |
+| --- | --- |
+| 2K direct CLI smoke test | Spark loaded with `-ctk turbo4 -ctv turbo4` and generated coherent reasoning/output |
+| Full-context allocation | 131,072-token Turbo4 K/V profile reached `/health` ready |
+| Full-context runtime RSS | 4,188,774,400 bytes (~3.90 GiB) immediately after load |
+| Available RAM after load | ~2.47 GiB reported; no swap used |
+| Manager chat prompt | 24 tokens at 19.81 tokens/s |
+| Manager chat generation | 32 reasoning tokens at 5.28 tokens/s |
+| Post-smoke hottest zone | ~54.5 C after the direct run; ~49 C after full-context load |
+| Clean stop | Passed; process exited and available RAM returned to ~4.7 GiB |
+
+Turbo4 did not create a dramatic end-to-end RSS reduction compared with the
+earlier Q8-cache build because the 1.7 GiB Q8 model weights, runtime arenas,
+prompt cache and other buffers dominate this measurement. Its expected benefit
+grows with cache occupancy; allocation success alone is not a 128K-token needle
+or quality test. A real long-prompt quality/perplexity comparison against Q8 K/V
+is still required before Turbo4 becomes the default production profile.
+
+#### Reimplemented device-native manager
+
+The useful architecture from `~/Git/local-llm` has been reimplemented for this
+Linux phone rather than copying its Apple-only MLX/Metal code. The new
+dependency-free Python service owns exactly one heavy runtime and provides:
+
+- validated Q8 128K, experimental Turbo4 128K, and fast 32K profiles;
+- executable/model/memory/temperature preflight checks;
+- a 128 MiB prompt-cache ceiling instead of the fork's unsafe 8 GiB default;
+- readiness polling, persisted PID/command state, graceful process-group stop,
+  restart, live logs, and a non-streaming OpenAI-compatible chat smoke test;
+- a sustained-critical-temperature guard that stops inference after three
+  consecutive 92 C samples;
+- total/available/swap memory, process RSS, and every readable thermal zone;
+- raw QGauge, SMB5 charger and TCPM attributes with explicit unit conversion;
+- design voltage/capacity, voltage/current now and average, temperature, OCV,
+  charge status/behaviour, learned capacity, effective ICL, USB type, source
+  capability and actual input power;
+- five-second voltage/current/temperature history and monotonic mAh/mWh
+  integration, plus the existing boot-segmented historical telemetry report;
+- explicit truth labels: voltage-derived capacity is not true SOC,
+  `charge_full=0` means learned FCC/SOH unavailable, and source capability is
+  not actual delivered input power.
+
+The manager is live at `http://192.168.1.101:7070`, while llama-server binds
+only to `127.0.0.1:8080`. Package release r28 installs and enables the manager;
+the custom runtime remains a separately reproducible build artifact and must be
+placed at the configured path in a new image. `API_TOKEN` is currently empty so
+the dashboard is convenient on the trusted LAN, and the UI displays a security
+warning. It must be set before exposure beyond that LAN.
+
+#### Newly exposed live power-path issue
+
+During the full-context test, TCPM advertised 5 V / 3 A (15 W), but
+`pm8150b-charger/current_max` was only **50,000 uA** and measured charger input
+power was about **0.23 W**. During inference QGauge briefly reported roughly
+-0.33 A battery current despite external input remaining online. This means the
+dock/charger has ample advertised capability but the current software state is
+not applying it to the SMB5 input limit. The manager now warns whenever the
+effective charger limit is below 500 mA despite a stronger TCPM source, and
+whenever the battery is materially discharging with input online.
+
+This result reopens the current-limit/source-transition investigation. Do not
+run sustained inference from this dock state: the phone is effectively using
+the battery for most of the load. Capture privileged `qcom_smbx` boot/status
+logs and validate the notifier/revalidation path after the next reconnect or
+boot before treating powered inference as unattended-safe.
+
 ## Production-safety validation matrix
 
 | Test | Required result |
@@ -1312,10 +1406,14 @@ true:
 
 ## Final replacement-battery statement
 
-The replacement battery appears healthy under the conditions observed. Recorded
-voltage remained at or below 4.130 V and recorded temperature remained within
-28.6-35.5 C, with no observed evidence of overcharging or abnormal thermal
-behavior. The configured 1.5 A ceiling is conservative.
+The earlier telemetry window showed voltage at or below 4.130 V and temperature
+within 28.6-35.5 C. A later live reading on September 6 reached approximately
+4.443 V (`voltage_now`) and 4.437 V (`voltage_avg`), slightly above the configured
+4.400 V design maximum, while battery temperature remained normal at about
+32-33 C. This may be measurement/scaling/calibration error rather than physical
+cell overcharge, but it invalidates the older blanket statement that the battery
+was always at or below 4.130 V. The replacement battery is not showing abnormal
+heat, yet voltage-ceiling behavior now requires targeted validation.
 
 The data does not validate over-voltage or thermal cutoff behavior because those
 conditions were not approached. The live device now runs patches 0010+0011,
@@ -1342,3 +1440,7 @@ treating the device as a finished unattended always-powered server.
 - [llama.cpp OpenCL backend documentation](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/OPENCL.md)
 - [llama.cpp Snapdragon Linux guide](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/linux.md)
 - [llama.cpp Hexagon backend details](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/developer.md)
+- [TurboQuant ICLR 2026 paper](https://openreview.net/forum?id=tO3ASKZlok)
+- [TheTom llama.cpp TurboQuant implementation](https://github.com/TheTom/llama-cpp-turboquant/tree/feature/turboquant-kv-cache)
+- [XHToken Spark-X2.5 llama.cpp support](https://github.com/XHToken/llama.cpp)
+- [llama.cpp Vulkan Turbo4 SET_ROWS report](https://github.com/ggml-org/llama.cpp/issues/22842)

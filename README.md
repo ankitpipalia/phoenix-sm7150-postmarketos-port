@@ -268,6 +268,32 @@ pmbootstrap build linux-postmarketos-qcom-sm7150
 
 ---
 
+## LLM Manager and TurboQuant
+
+The server image includes a lightweight Python control plane at port `7070`.
+It owns one llama.cpp process at a time and provides launch profiles, a chat
+smoke test, runtime logs, memory/thermal monitoring, and detailed battery,
+charger and Type-C PD telemetry. Configure it in
+`/etc/phoenix-llm-manager.conf`; set `API_TOKEN` before exposing the device to
+an untrusted network.
+
+The Spark-X2.5 runtime is a pinned combination of the XHToken model-support
+fork and TheTom's TurboQuant fork. Build the ARM64 CPU/OpenBLAS bundle on an
+Apple Silicon or other Docker host with:
+
+```bash
+./scripts/build-llama-spark-turboquant.sh
+```
+
+Install the resulting `bin/` directory at
+`/home/user/opt/llama-spark-turboquant/bin`. The manager's Turbo4 profile uses
+true rotated TurboQuant for the K/V cache; it does not re-quantize the Q8_0
+model weights. Vulkan is intentionally disabled for this combined build
+because the Adreno 618/Turnip device does not expose the 16-bit storage feature
+required by the current Spark Vulkan path.
+
+---
+
 ## Troubleshooting
 
 ### Device returns to fastboot immediately

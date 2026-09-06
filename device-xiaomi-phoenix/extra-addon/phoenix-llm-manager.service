@@ -1,0 +1,28 @@
+[Unit]
+Description=Phoenix LLM control and battery dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+Group=user
+EnvironmentFile=-/etc/phoenix-llm-manager.conf
+Environment=LD_LIBRARY_PATH=/home/user/opt/llama-spark-turboquant/bin
+ExecStart=/usr/bin/python3 /usr/libexec/phoenix-llm-manager.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=phoenix-llm
+StateDirectoryMode=0750
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
