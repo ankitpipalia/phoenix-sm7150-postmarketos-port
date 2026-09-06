@@ -326,7 +326,7 @@ should not yet be described as a production-safe unattended 24/7 charger.
 The remaining highest-priority validation work is:
 
 1. Install the rebuilt kernel containing patches 0010+0011 and prove that `charge_behaviour=inhibit-charge` leaves USB input `online=1` while battery current settles near zero. **Prior live note:** the May kernel still lacked `charge_behaviour`; new `0011` fixes float selector, watchdog base, OV notify, ICL ordering/log and revalidation robustness are compile-tested and device-logic-tested (0.847 mWh, thermal fail-open, Vnow emergency), but not yet flashed.
-2. Run controlled low-voltage/source-loss and thermal-input tests before enabling the shutdown guard. **Live:** guard `disabled` as intended; synthetic tests now cover independent channels (`temp 500` with invalid voltage fires, `voltage_now 3300000` vs `voltage_avg 3500000` triggers emergency), sensor-failure policy (12 samples logs + conservative shutdown), and `ConditionPathExists` removed (`Restart=always`); real source-loss still pending.
+2. Run controlled low-voltage/source-loss and thermal-input tests before treating the shutdown guard as production-validated. **Live 2026-09-06:** the user requested activation after the charge-inhibition test, so the guard is now `enabled` and `active` with `DRY_RUN=0`. Synthetic tests cover independent channels (`temp 500` with invalid voltage fires, `voltage_now 3300000` vs `voltage_avg 3500000` triggers emergency), sensor-failure policy (12 samples logs + conservative shutdown), and `ConditionPathExists` removed (`Restart=always`); real source-loss at the configured threshold is still pending.
 3. Exercise SMB5 over-voltage/thermal status reporting and all TCPM source transitions on hardware. **Live:** patches 0010+0011 compile-tested; `dmesg` still old `SMB5 Generation SMB5` without OV fix until flash; `health=Good` cannot validate OV until kernel upgrade. Validate with synthetic register instrumentation, not real OV.
 4. Revalidate the installed r24 device package, `20-phoenix-optional.preset`, and env-override handling after connectivity is restored. **Prior live notes:** r21 and then r22 were installed and preset `ignore` preserved the opt-in state; a later note reports r24 installed. These observations were not rechecked in the 2026-09-05 read-only audit because neither SSH path was reachable.
 
@@ -1351,6 +1351,32 @@ the battery for most of the load. Capture privileged `qcom_smbx` boot/status
 logs and validate the notifier/revalidation path after the next reconnect or
 boot before treating powered inference as unattended-safe.
 
+#### Battery safety stack activated — 2026-09-06 04:17 UTC
+
+After the successful basic charge-inhibition test, all four device safety
+helpers were enabled at the user's request:
+
+```text
+phoenix-charge-cap.timer          enabled / active
+phoenix-battery-safety.service    enabled / active (DRY_RUN=0)
+phoenix-battery-telemetry.service enabled / active
+phoenix-typec-recover.timer       enabled / active
+```
+
+The first charge-cap run saw `voltage_avg` around 4.347 V, wrote
+`inhibit-charge`, created its ownership marker, and retained
+`charger/online=1` with charger health `Good`. The battery shutdown guard stayed
+running normally at approximately 32.5-32.6 C and well above its low-voltage
+threshold. Type-C recovery completed as a no-op because the current bracketed
+role was sink, and no systemd unit entered the failed state.
+
+Telemetry immediately created `telemetry-2026-09-06.tsv` with five-second,
+boot-ID-tagged samples. Its first four samples integrated 0.311 mAh / 1.345 mWh
+of discharge. Effective input current limit moved from 50 mA to 300 mA but
+remained far below the TCPM-advertised 3 A, and battery current remained
+negative. Enabling the safety stack therefore succeeded, but it does not solve
+the separate ICL/source-capability problem described above.
+
 ## Production-safety validation matrix
 
 | Test | Required result |
@@ -1418,10 +1444,12 @@ heat, yet voltage-ceiling behavior now requires targeted validation.
 The data does not validate over-voltage or thermal cutoff behavior because those
 conditions were not approached. The live device now runs patches 0010+0011,
 including the SMB5 status-2 over-voltage selection and watchdog/OV/float/ICL
-robustness, and true charge inhibition has passed its basic hardware test.
-Synthetic OV/thermal tests, low-voltage shutdown validation, source-transition
-tests, and the newly compiled patch-0012 9 V PD test remain required before
-treating the device as a finished unattended always-powered server.
+robustness, and true charge inhibition has passed its basic hardware test. On
+September 6 the charge-cap timer, shutdown guard, telemetry collector and Type-C
+recovery timer were all enabled. Synthetic OV/thermal tests, real low-voltage
+shutdown validation, source-transition tests, and the newly compiled
+patch-0012 9 V PD test remain required before treating the device as a finished
+unattended always-powered server.
 
 ## External references (updated 2026-09-05)
 
