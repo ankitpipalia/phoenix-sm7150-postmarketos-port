@@ -367,7 +367,7 @@ case "$status_output" in
 	*) fail "status did not report the settled input current limit" ;;
 esac
 
-# ---- Float-voltage mode: cap the ceiling, keep the charger regulating ----
+# ---- Float-voltage mode (opt-in): cap the ceiling, keep charging enabled ----
 mkdir -p "$test_root/power13/pm8150b-charger" "$test_root/power13/qcom_qg" \
 	"$test_root/run13" "$test_root/proc13"
 printf 'auto\n' > "$test_root/power13/pm8150b-charger/charge_behaviour"
@@ -379,7 +379,7 @@ printf '%s\n' -50000 > "$test_root/power13/qcom_qg/current_avg"
 printf '5000.00 0.00\n' > "$test_root/proc13/uptime"
 
 run13() {
-	POWER_SUPPLY_ROOT="$test_root/power13" RUN_DIR="$test_root/run13" \
+	FLOAT_CONTROL=1 POWER_SUPPLY_ROOT="$test_root/power13" RUN_DIR="$test_root/run13" \
 		PROC_ROOT="$test_root/proc13" "$cap_script" "$@"
 }
 
@@ -430,7 +430,7 @@ run13 reset
 
 # status must name the active control mode.
 case "$(run13 status)" in
-	*"float voltage (adapter-first)"*) ;;
+	*"control mode:      float voltage"*) ;;
 	*) fail "status did not report float-voltage control mode" ;;
 esac
 
@@ -518,5 +518,131 @@ printf '2000\n' > "$test_root/power15/qcom_qg/temp"
 # A cold cell below 0 C is a valid reading, not an invalid one.
 printf '%s\n' -50 > "$test_root/power15/qcom_qg/temp"
 [ -z "$(safety15)" ] || fail "safety guard mishandled a negative temperature"
+
+# ---- Float mode: never raise an externally lowered ceiling; log once, not per run ----
+mkdir -p "$test_root/power16/pm8150b-charger" "$test_root/power16/qcom_qg" "$test_root/run16" "$test_root/proc16" "$test_root/fakebin16"
+printf 'auto\n' > "$test_root/power16/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power16/pm8150b-charger/online"
+printf '4000000\n' > "$test_root/power16/pm8150b-charger/constant_charge_voltage"
+printf '4050000\n' > "$test_root/power16/qcom_qg/voltage_now"
+printf '5000.00 0.00\n' > "$test_root/proc16/uptime"
+# count logger invocations
+printf '#!/bin/sh\necho "$*" >> "%s/logger.calls"\n' "$test_root/run16" > "$test_root/fakebin16/logger"
+chmod +x "$test_root/fakebin16/logger"
+run16() { PATH="$test_root/fakebin16:$PATH" FLOAT_CONTROL=1 POWER_SUPPLY_ROOT="$test_root/power16" RUN_DIR="$test_root/run16" PROC_ROOT="$test_root/proc16" "$cap_script" "$@"; }
+run16; run16; run16
+[ "$(cat "$test_root/power16/pm8150b-charger/constant_charge_voltage")" = 4000000 ] ||
+	fail "float mode raised a ceiling that was already below the target"
+[ "$(grep -c 'already below target' "$test_root/run16/logger.calls")" = 1 ] ||
+	fail "float mode logged the external-ceiling state on every run instead of once"
+[ ! -e "$test_root/run16/phoenix-charge-cap.float-original" ] ||
+	fail "float mode claimed ownership of a ceiling it did not lower"
+# the value changes externally -> exactly one more log line
+printf '3950000\n' > "$test_root/power16/pm8150b-charger/constant_charge_voltage"
+run16; run16
+[ "$(grep -c 'already below target' "$test_root/run16/logger.calls")" = 2 ] ||
+	fail "float mode did not log once for a changed external ceiling"
+# reset clears the log-once marker
+run16 reset
+[ ! -e "$test_root/run16/phoenix-charge-cap.float-external" ] || fail "reset left the float-external marker"
+
+# ---- Float control is opt-in: a writable ceiling alone must not switch modes ----
+# Patch 0018 has never run on hardware, so installing a kernel that carries it
+# must leave the validated inhibit-charge path in charge until FLOAT_CONTROL=1.
+mkdir -p "$test_root/power17/pm8150b-charger" "$test_root/power17/qcom_qg" "$test_root/run17" "$test_root/proc17"
+printf 'auto\n' > "$test_root/power17/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power17/pm8150b-charger/online"
+printf '4400000\n' > "$test_root/power17/pm8150b-charger/constant_charge_voltage"
+printf '4150000\n' > "$test_root/power17/qcom_qg/voltage_avg"
+printf '4150000\n' > "$test_root/power17/qcom_qg/voltage_now"
+printf '5000.00 0.00\n' > "$test_root/proc17/uptime"
+run17() { POWER_SUPPLY_ROOT="$test_root/power17" RUN_DIR="$test_root/run17" PROC_ROOT="$test_root/proc17" "$cap_script" "$@"; }
+run17_float() { FLOAT_CONTROL=1 POWER_SUPPLY_ROOT="$test_root/power17" RUN_DIR="$test_root/run17" PROC_ROOT="$test_root/proc17" "$cap_script" "$@"; }
+run17
+[ "$(cat "$test_root/power17/pm8150b-charger/constant_charge_voltage")" = 4400000 ] ||
+	fail "float ceiling changed without FLOAT_CONTROL=1"
+[ "$(cat "$test_root/power17/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "limiter did not use inhibit-charge with float control off"
+case "$(run17 status)" in
+	*"control mode:      inhibit-charge (float available, FLOAT_CONTROL=0)"*) ;;
+	*) fail "status did not report float control as available but off" ;;
+esac
+# Opting in takes over from the owned inhibit ...
+run17_float
+[ "$(cat "$test_root/power17/pm8150b-charger/constant_charge_voltage")" = 4100000 ] ||
+	fail "FLOAT_CONTROL=1 did not program the ceiling"
+[ "$(cat "$test_root/power17/pm8150b-charger/charge_behaviour")" = auto ] ||
+	fail "FLOAT_CONTROL=1 left the owned inhibit in place"
+# ... and after opting out again, reset still restores the ceiling we lowered.
+run17 reset
+[ "$(cat "$test_root/power17/pm8150b-charger/constant_charge_voltage")" = 4400000 ] ||
+	fail "reset with float control off did not restore the lowered ceiling"
+[ ! -e "$test_root/run17/phoenix-charge-cap.float-original" ] ||
+	fail "reset with float control off left the float-original marker"
+# Without the float attribute, status names the reason for inhibit-charge.
+rm "$test_root/power17/pm8150b-charger/constant_charge_voltage"
+case "$(run17 status)" in
+	*"control mode:      inhibit-charge (no float control in kernel)"*) ;;
+	*) fail "status did not report the missing kernel float control" ;;
+esac
+
+# ---- Telemetry golden row: the exact bytes a sample must produce ----
+# Makes the "builtins rewrite is byte-identical" claim checkable without git
+# history.  Covers the live oddities: empty APSD usb_type, bracketed selections,
+# a tab and CR inside a value (sanitised to spaces), and an absent TCPM field.
+g=$test_root/golden; mkdir -p "$g/bin" "$g/power/qcom_qg" "$g/power/pm8150b-charger" \
+	"$g/power/tcpm-source-psy-x" "$g/typec/port0" "$g/proc/sys/kernel/random" "$g/log"
+cat > "$g/bin/date" <<'EOS'
+#!/bin/sh
+case "$*" in
+	"-u +%s %F") echo "1790000000 2026-09-21" ;;
+	"-Iseconds") echo "2026-09-21T13:33:20+00:00" ;;
+	*) exec /bin/date "$@" ;;
+esac
+EOS
+chmod +x "$g/bin/date"
+w() { printf '%b\n' "$2" > "$g/$1"; }
+w power/qcom_qg/capacity 87;            w power/qcom_qg/voltage_now 4167000
+w power/qcom_qg/voltage_avg 4170000;    w power/qcom_qg/voltage_ocv 0
+w power/qcom_qg/current_now -1234;      w power/qcom_qg/current_avg 1000
+w power/qcom_qg/temp 325;               w power/pm8150b-charger/online 1
+w power/pm8150b-charger/status 'Not charging'
+w power/pm8150b-charger/health 'odd\tvalue\r'
+w power/pm8150b-charger/usb_type ''
+w power/pm8150b-charger/voltage_now 4935000; w power/pm8150b-charger/current_now 287000
+w power/pm8150b-charger/current_max 500000;  w power/tcpm-source-psy-x/online 1
+w power/tcpm-source-psy-x/voltage_now 5000000
+w power/tcpm-source-psy-x/usb_type 'C [PD] PD_PPS'
+w typec/port0/power_role 'source [sink]'
+printf '1753629.63 0.00\n' > "$g/proc/uptime"; printf 'boot-xyz\n' > "$g/proc/sys/kernel/random/boot_id"
+PATH="$g/bin:$PATH" POWER_SUPPLY_ROOT="$g/power" TYPEC_ROOT="$g/typec" PROC_ROOT="$g/proc" \
+	LOG_DIR="$g/log" INTERVAL_SECONDS=1 MAX_SAMPLES=1 sh "$telemetry_script"
+expected=$(printf '%s\t' 1790000000 2026-09-21T13:33:20+00:00 1753629.63 boot-xyz 87 4167000 4170000 0 \
+	-1234 1000 325 1 'Not charging' 'odd value ' '' 4935000 287000 500000 1 5000000 '' 'C [PD] PD_PPS'; \
+	printf '%s' 'source [sink]')
+actual=$(sed -n 2p "$g/log/telemetry-2026-09-21.tsv")
+[ "$actual" = "$expected" ] || {
+	printf 'expected: %s\nactual:   %s\n' "$expected" "$actual" | cat -vet >&2
+	fail "telemetry row is not byte-identical to the golden row"
+}
+[ "$(sed -n 1p "$g/log/telemetry-2026-09-21.tsv" | awk -F '\t' '{print NF}')" = 23 ] ||
+	fail "telemetry header does not have 23 fields"
+
+# ---- Adapter test must restore the charge behaviour that was in force ----
+adapter_script="$repo_root/device-xiaomi-phoenix/extra-addon/phoenix-adapter-test.sh"
+a=$test_root/adapter; mkdir -p "$a/power/pm8150b-charger" "$a/power/qcom_qg" "$a/proc" "$a/thermal/thermal_zone0" "$a/typec"
+printf 'inhibit-charge\n' > "$a/power/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$a/power/pm8150b-charger/online"
+printf '4200000\n' > "$a/power/qcom_qg/voltage_avg"
+printf '40000\n' > "$a/thermal/thermal_zone0/temp"
+printf '5000.00 0.00\n' > "$a/proc/uptime"
+trace=$(POWER_SUPPLY_ROOT="$a/power" THERMAL_ROOT="$a/thermal" TYPEC_ROOT="$a/typec" PROC_ROOT="$a/proc" \
+	RESULT_DIR="$a/results" IDLE_SECONDS=0 sh -x "$adapter_script" --label cleanup --no-load 2>&1) ||
+	fail "adapter test failed to run against a fake sysfs"
+case "$trace" in *"printf '%s\n' auto"*) ;; *) fail "adapter test never switched the charger to auto" ;; esac
+[ "$(cat "$a/power/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
+	fail "adapter test did not restore the original inhibit-charge on exit"
+! grep -q '/run/phoenix-charge-cap\.' "$adapter_script" ||
+	fail "adapter test still touches the charge limiter's ownership markers"
 
 echo "battery tool tests: PASS"

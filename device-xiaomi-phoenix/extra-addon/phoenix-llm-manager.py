@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import ipaddress
 import json
 import os
 import pwd
@@ -22,6 +23,7 @@ import secrets
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -164,6 +166,35 @@ def pid_command(pid: int) -> list[str]:
         return []
 
 
+_CACHE: dict[str, tuple[float, Any]] = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_KEY_LOCKS: dict[str, threading.Lock] = {}
+
+
+def cached(key: str, ttl: float, compute: Any) -> Any:
+    """Memoise a system command for `ttl` seconds.
+
+    Single-flight: callers that miss together wait for one compute() instead of
+    each running their own, so a shared reading is taken at most once per
+    `ttl`.  Keys are fixed strings, so the per-key locks stay bounded.
+
+    Defined ahead of the samplers: BATTERY starts its thread at import time, and
+    a name that did not exist yet would kill that thread on its first sample.
+    """
+    with _CACHE_LOCK:
+        key_lock = _CACHE_KEY_LOCKS.setdefault(key, threading.Lock())
+    with key_lock:
+        with _CACHE_LOCK:
+            hit = _CACHE.get(key)
+        now = time.monotonic()
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+        value = compute()
+        with _CACHE_LOCK:
+            _CACHE[key] = (now, value)
+        return value
+
+
 def service_state(unit: str) -> str:
     try:
         result = subprocess.run(
@@ -189,6 +220,19 @@ def historical_battery_report() -> str | None:
 
 
 def thermal_snapshot() -> dict[str, Any]:
+    """All thermal zones, shared across callers for a few seconds.
+
+    Both samplers, the thermal guard and API requests each wanted a fresh read
+    of every zone on their own 5 s clocks -- four full sweeps per cycle, which
+    measured as the console's largest idle cost.  Zones are sampled every 5 s
+    anyway, so a reading up to 4 s old is fresh enough, and cached() makes
+    callers that miss together share one sweep.  The key includes the root so
+    tests pointing THERMAL_ROOT elsewhere never see another root's data.
+    """
+    return cached(f"thermal:{THERMAL_ROOT}", 4.0, _read_thermal_zones)
+
+
+def _read_thermal_zones() -> dict[str, Any]:
     zones: list[dict[str, Any]] = []
     for path in sorted(THERMAL_ROOT.glob("thermal_zone*")):
         raw = read_int(path / "temp")
@@ -343,45 +387,55 @@ class BatterySampler:
         return {
             "timestamp": time.time(), "battery": battery, "charger": charger,
             "source": source, "typec": typec, "thermals": thermals, "warnings": warnings,
-            "services": {
+            "services": cached("battery-services", 30.0, lambda: {
                 "charge_cap": service_state("phoenix-charge-cap.timer"),
                 "battery_safety": service_state("phoenix-battery-safety.service"),
                 "telemetry": service_state("phoenix-battery-telemetry.service"),
-            },
+            }),
         }
 
     def _loop(self) -> None:
         while True:
-            snap = self.snapshot()
-            now = time.monotonic()
-            battery = snap["battery"]
-            current = battery.get("current_now")
-            voltage = plausible_voltage_uv(battery.get("voltage_avg"), battery.get("voltage_now"))
-            with self.lock:
-                if self.last_t is not None and current is not None and voltage is not None and self.last_current_ua is not None and self.last_voltage_uv is not None:
-                    dt = now - self.last_t
-                    if 0 < dt <= 15:
-                        avg_i = (current + self.last_current_ua) / 2
-                        avg_v = (voltage + self.last_voltage_uv) / 2
-                        mah = abs(avg_i) * dt / 3_600_000
-                        mwh = abs(avg_i * avg_v) * dt / 3_600_000_000_000
-                        if avg_i >= 0:
-                            self.charged_mah += mah
-                            self.charged_mwh += mwh
-                        else:
-                            self.discharged_mah += mah
-                            self.discharged_mwh += mwh
-                self.last_t, self.last_current_ua, self.last_voltage_uv = now, current, voltage
-                # `t` is the x-axis key every chart reads; input_w feeds the
-                # adapter-power multiple on the Power page.
-                self.history.append({
-                    "t": snap["timestamp"], "timestamp": snap["timestamp"],
-                    "voltage_uv": voltage, "current_ua": current,
-                    "temp_c": battery.get("temperature_c"),
-                    "charger_online": snap["charger"].get("online"),
-                    "input_w": snap["charger"].get("input_power_w"),
-                })
+            try:
+                self._sample()
+            except Exception as exc:  # noqa: BLE001 - a sampler must never die
+                print(f"battery sampler error: {exc}", flush=True)
             time.sleep(CONFIG.sample_seconds)
+
+    def _sample(self) -> None:
+        snap = self.snapshot()
+        now = time.monotonic()
+        battery = snap["battery"]
+        current = battery.get("current_now")
+        voltage = plausible_voltage_uv(battery.get("voltage_avg"), battery.get("voltage_now"))
+        with self.lock:
+            if self.last_t is not None and current is not None and voltage is not None and self.last_current_ua is not None and self.last_voltage_uv is not None:
+                dt = now - self.last_t
+                # The gap bound scales with the configured interval; a fixed
+                # 15 s would silently stop integrating at SAMPLE_SECONDS > 15.
+                if 0 < dt <= max(15.0, 3 * CONFIG.sample_seconds):
+                    avg_i = (current + self.last_current_ua) / 2
+                    # Integrate power, not avg(V) x avg(I) -- same rule as
+                    # phoenix-battery-report.
+                    avg_p = (current * voltage + self.last_current_ua * self.last_voltage_uv) / 2
+                    mah = abs(avg_i) * dt / 3_600_000
+                    mwh = abs(avg_p) * dt / 3_600_000_000_000
+                    if avg_i >= 0:
+                        self.charged_mah += mah
+                        self.charged_mwh += mwh
+                    else:
+                        self.discharged_mah += mah
+                        self.discharged_mwh += mwh
+            self.last_t, self.last_current_ua, self.last_voltage_uv = now, current, voltage
+            # `t` is the x-axis key every chart reads; input_w feeds the
+            # adapter-power multiple on the Power page.
+            self.history.append({
+                "t": snap["timestamp"], "timestamp": snap["timestamp"],
+                "voltage_uv": voltage, "current_ua": current,
+                "temp_c": battery.get("temperature_c"),
+                "charger_online": snap["charger"].get("online"),
+                "input_w": snap["charger"].get("input_power_w"),
+            })
 
     def report(self) -> dict[str, Any]:
         current = self.snapshot()
@@ -469,21 +523,6 @@ try:
     PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
 except (ValueError, OSError, AttributeError):
     CLK_TCK, PAGE_SIZE = 100, 4096
-
-_CACHE: dict[str, tuple[float, Any]] = {}
-_CACHE_LOCK = threading.Lock()
-
-
-def cached(key: str, ttl: float, compute: Any) -> Any:
-    now = time.monotonic()
-    with _CACHE_LOCK:
-        hit = _CACHE.get(key)
-        if hit and now - hit[0] < ttl:
-            return hit[1]
-    value = compute()
-    with _CACHE_LOCK:
-        _CACHE[key] = (now, value)
-    return value
 
 
 def run_cmd(args: list[str], timeout: float = 5) -> str:
@@ -602,6 +641,15 @@ def net_interfaces() -> list[dict[str, Any]]:
     return out
 
 
+def decode_proc_addr(hex_addr: str) -> str:
+    """Decode a /proc/net/tcp{,6} address; each 32-bit word is in host order."""
+    raw = bytes.fromhex(hex_addr)
+    if len(raw) not in (4, 16):
+        raise ValueError("unexpected address length")
+    ordered = b"".join(raw[i:i + 4][::-1] for i in range(0, len(raw), 4)) if sys.byteorder == "little" else raw
+    return str(ipaddress.ip_address(ordered))
+
+
 def listening_ports() -> list[dict[str, Any]]:
     out = []
     for proto, path in (("tcp", PROC_ROOT / "net/tcp"), ("tcp6", PROC_ROOT / "net/tcp6")):
@@ -612,7 +660,7 @@ def listening_ports() -> list[dict[str, Any]]:
             addr, _, port_hex = fields[1].rpartition(":")
             try:
                 port = int(port_hex, 16)
-                host = ".".join(str(b) for b in bytes.fromhex(addr)[::-1]) if proto == "tcp" else ("::" if set(addr) <= {"0"} else "[::]")
+                host = decode_proc_addr(addr)
             except ValueError:
                 continue
             out.append({"proto": proto, "host": host, "port": port, "service": WELL_KNOWN_PORTS.get(port, "")})
@@ -837,6 +885,8 @@ class SystemSampler:
         self._prev_net: dict[str, tuple[int, int]] = {}
         self._prev_proc: dict[int, int] = {}
         self._prev_time: float | None = None
+        self._process_demand_until = 0.0
+        self._process_total_delta = 0
         if start:
             threading.Thread(target=self._loop, name="system-sampler", daemon=True).start()
 
@@ -867,7 +917,11 @@ class SystemSampler:
                 if name in self._prev_net and dt > 0 and name != "lo":
                     rates[name] = {"rx_bps": max(0, rx - self._prev_net[name][0]) / dt,
                                    "tx_bps": max(0, tx - self._prev_net[name][1]) / dt}
-        processes, new_prev = self._process_table(total_delta)
+        if time.monotonic() < self._process_demand_until:
+            processes, new_prev = self._process_table(total_delta)
+        else:
+            processes, new_prev = None, {}
+        process_count = count_processes()
         memory = meminfo()
         thermal = thermal_snapshot()
         groups = thermal_groups(thermal["zones"])
@@ -879,15 +933,18 @@ class SystemSampler:
             "swap_used": memory["swap_used_bytes"], "load1": load["load1"],
             "temp_hot": thermal["hottest"]["temp_c"] if thermal["hottest"] else None,
             "temp_cpu": groups["cpu"], "temp_gpu": groups["gpu"], "temp_battery": groups["battery"],
-            "net": rates, "processes": len(processes),
+            "net": rates, "processes": process_count,
         }
         with self.lock:
             self.history.append(point)
-            self.processes = processes
+            if processes is not None:
+                self.processes = processes
             self.latest = {"cpu": cpu_pct, "clusters": clusters, "policies": policies, "memory": memory,
                            "thermal": thermal, "groups": groups, "load": load, "net_rates": rates,
-                           "process_count": len(processes), "cooling": cooling_devices()}
-        self._prev_total, self._prev_cpu, self._prev_net, self._prev_proc, self._prev_time = (total, idle), per_cpu, net, new_prev, now
+                           "process_count": process_count, "cooling": cooling_devices()}
+        self._prev_total, self._prev_cpu, self._prev_net, self._prev_time = (total, idle), per_cpu, net, now
+        if processes is not None:
+            self._prev_proc = new_prev
         return point
 
     def _process_table(self, total_delta: int) -> tuple[list[dict[str, Any]], dict[int, int]]:
@@ -936,6 +993,14 @@ class SystemSampler:
             return list(self.history)
 
     def process_report(self, sort: str = "cpu", limit: int = 60, query: str = "") -> dict[str, Any]:
+        idle = time.monotonic() >= self._process_demand_until
+        self._process_demand_until = time.monotonic() + 60
+        if idle:
+            # First look after a quiet spell: take a table now so the page is not
+            # empty.  CPU% needs two samples, so it reads 0 until the next tick.
+            rows, self._prev_proc = self._process_table(0)
+            with self.lock:
+                self.processes = rows
         with self.lock:
             rows = list(self.processes)
         if query:
@@ -948,6 +1013,13 @@ class SystemSampler:
         else:
             rows.sort(key=key, reverse=True)
         return {"total": len(rows), "rows": rows[:max(1, min(limit, 500))], "sampled_over_s": self.interval}
+
+
+def count_processes() -> int:
+    try:
+        return sum(1 for entry in os.scandir(PROC_ROOT) if entry.name.isdigit())
+    except OSError:
+        return 0
 
 
 SYSTEM = SystemSampler(start=os.getenv("PHOENIX_LLM_DISABLE_SAMPLER") != "1")
@@ -1112,20 +1184,33 @@ def thermal_guard() -> None:
     """
     critical_samples = 0
     while True:
-        hottest = thermal_snapshot()["hottest"]
-        if RUNTIME.status()["running"] and hottest and hottest["temp_c"] >= CONFIG.thermal_critical_c:
-            critical_samples += 1
-            if critical_samples >= 3:
-                print(
-                    f"thermal guard stopping runtime: {hottest['name']}="
-                    f"{hottest['temp_c']} C",
-                    flush=True,
-                )
-                RUNTIME.stop()
-                critical_samples = 0
-        else:
+        try:
+            critical_samples = thermal_guard_step(critical_samples)
+        except Exception as exc:  # noqa: BLE001 - the guard must never die
+            print(f"thermal guard error: {exc}", flush=True)
             critical_samples = 0
         time.sleep(5)
+
+
+def thermal_guard_step(critical_samples: int) -> int:
+    """One guard tick; returns the updated consecutive-critical count.
+
+    The guard only protects a running runtime, so it checks that first with one
+    small state-file read.  It used to call RUNTIME.status() -- meminfo plus a
+    second full thermal sweep -- every 5 s even with no model loaded.
+    """
+    pid = int(RUNTIME._state().get("pid", 0) or 0)
+    if not RUNTIME._owned_pid(pid):
+        return 0
+    hottest = thermal_snapshot()["hottest"]
+    if not hottest or hottest["temp_c"] < CONFIG.thermal_critical_c:
+        return 0
+    critical_samples += 1
+    if critical_samples >= 3:
+        print(f"thermal guard stopping runtime: {hottest['name']}={hottest['temp_c']} C", flush=True)
+        RUNTIME.stop()
+        return 0
+    return critical_samples
 
 
 def profile_list() -> list[dict[str, Any]]:

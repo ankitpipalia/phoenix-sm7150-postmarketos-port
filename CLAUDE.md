@@ -14,10 +14,10 @@ All builds, installs and flashes happen through `pmbootstrap` against a clone of
 
 ## Expected workspace layout
 
-The wrapper scripts in `scripts/` resolve paths via `$(dirname "$0")/../..`, so they assume this repo sits inside a sibling-laid-out workspace:
+The wrapper scripts in `scripts/` resolve paths via `$(dirname "$0")/../..`, so they assume this repo sits inside a sibling-laid-out workspace (on the maintainer's machine that parent is `~/Git/`):
 
 ```
-~/Documents/phoenix/
+~/Git/
 ├── phoenix-sm7150-postmarketos-port/   # this repo
 ├── pmaports/                            # postmarketOS package tree (cloned)
 ├── pmbootstrap/                         # pmbootstrap source checkout (optional; falls back to system pmbootstrap)
@@ -62,6 +62,7 @@ sync transformations:
 ```sh
 sh tests/test-battery-tools.sh
 bash tests/test-sync-phoenix-port.sh
+python3 tests/test-llm-manager.py
 ```
 
 They do not replace `pmbootstrap build`/`install` or live boot/dmesg validation
@@ -117,7 +118,7 @@ These are non-obvious and easy to undo accidentally — be careful before "simpl
 - **`/etc/apk/world` doesn't always reflect deletions.** A device pkg `depends="…doas-sudo-shim…"` line gets pinned into world during install, so removing the dependency from the APKBUILD doesn't remove the world entry; flash a fresh image or `apk del doas-sudo-shim` post-upgrade if you ever re-add+remove a dep.
 - **`adsp-disable-recovery.service` is load-bearing for thermal/battery.** Phoenix's ADSP firmware's `sensor_process` PD crashes at `SNS_REG_INIT` (`sns_registry_sensor.c:94: SNS_RC_SUCCESS == rc`) every time. The default `qcom_q6v5_pas` `recovery=enabled` policy then restarts the entire ADSP every ~4 s — observed ~11 crashes/min, package temp ~64 °C at 0.12 load, and a battery drain that empties a charged battery in ~1 h. The service writes `disabled` to `/sys/class/remoteproc/remoteproc0/recovery` early in `sysinit.target`; do NOT remove or disable it without also fixing the firmware probe (no known fix without proprietary sensor registry). Audio is broken anyway (`q6asm-dai` probe `-22`), and `cdsp`/`modem` remoteprocs are independent.
 - **Headless mode is the packaged default.** `default.target` points to `multi-user.target`, `greetd` is disabled, and `phoenix-screen-off.service` blanks and powers down the internal backlight. `phoenix-usb-host-wake.service` is enabled and its 45-second role-toggle recovery brought up the tested dock's Ethernet two seconds later. SSH and networking remain active. Re-enable `greetd` and select `graphical.target` only when deliberately returning to phone/GUI use.
-- **`phoenix-charge-cap.timer` exists for 24/7 server use; disabled by default.** It uses voltage hysteresis (4.00-4.10 V by default) and patch 0010's `charge_behaviour=inhibit-charge`, which leaves USB input online. It refuses to run on an old kernel rather than falling back to `STATUS`/`USBIN_SUSPEND`. Adjust `/etc/phoenix-charge-cap.conf` (`START_VOLTAGE_UV=`, `STOP_VOLTAGE_UV=`). To disable it while safely releasing an inhibit owned by the limiter, run `systemctl disable --now phoenix-charge-cap.timer && systemctl start phoenix-charge-cap-reset.service`; reset deliberately does not depend on QGauge data and never clears an external controller's inhibit.
+- **`phoenix-charge-cap.timer` exists for 24/7 server use; disabled by default.** It uses voltage hysteresis (4.00-4.10 V by default) and patch 0010's `charge_behaviour=inhibit-charge`, which leaves USB input online. It refuses to run on an old kernel rather than falling back to `STATUS`/`USBIN_SUSPEND`. Adjust `/etc/phoenix-charge-cap.conf` (`START_VOLTAGE_UV=`, `STOP_VOLTAGE_UV=`). To disable it while safely releasing an inhibit owned by the limiter, run `systemctl disable --now phoenix-charge-cap.timer && systemctl start phoenix-charge-cap-reset.service`; reset deliberately does not depend on QGauge data and never clears an external controller's inhibit. Float-voltage control (kernel patch 0018) stays opt-in via `FLOAT_CONTROL=1`: the patch has never been compiled or run on the phone and that mode has no deficit guard, so don't make it the default until a watched hardware test confirms it.
 - **`phoenix-battery-safety.service` is a separate shutdown guard; disabled by default.** It watches voltage, discharge current, source presence, and temperature every five seconds. Validate its conservative thresholds in a controlled source-loss test before enabling it on an unattended device.
 - **`phoenix-typec-recover.timer` rescues "stuck as source" Type-C state; disabled by default.** When charger is briefly removed while a hub is still attached, the Type-C stack can swap to source/host so the hub keeps running on battery. The timer requires `[source]`, charger offline and a partner, then uses low voltage as its primary urgency signal and the voltage-derived level as a fallback when both voltage attributes are missing or invalid. It forces a manual swap by writing `sink`; if no external power appears, it reverts to `source` so the hub stays powered. Configure `/etc/phoenix-typec-recover.conf` and opt in with `systemctl enable --now phoenix-typec-recover.timer`.
 - **Podman on the shipped kernel needs `firewall_driver = "none"`.** The 7.1_rc3 config lacks `CONFIG_NFT_FIB_INET`/`CONFIG_NFT_REDIR`, so netavark's nftables ruleset fails and netavark 2.x has no iptables fallback; `/etc/containers/containers.conf.d/10-phoenix.conf` disables netavark's firewall and `52_phoenix_eth_trust.nft` carries the `podman0` NAT/forward rules instead. Bridged containers therefore cannot publish ports — use `Network=host` (Portainer does) until a kernel built with the sync script's enforced symbols is installed. Also leave `cgroup_manager` at the default `cgroupfs`: Alpine's crun has no systemd support.

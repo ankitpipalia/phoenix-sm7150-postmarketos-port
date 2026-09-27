@@ -1582,6 +1582,186 @@ which is why it, rather than a raw TCP API listener, is the "web service".
 Podman is installed on the device, not baked into the ROM image; packaging it
 into `device-xiaomi-phoenix` is a separate decision.
 
+### Three-week recheck and code review — 2026-09-27
+
+The device ran unattended from the 2026-09-06 17:07 reboot test to this check:
+**20.3 days** of uptime on one boot, zero failed units, `NRestarts=0` on every
+Phoenix unit, nftables and Portainer (container up the whole time), ext4 clean.
+Telemetry retention (14 days) holds Sep 12 onward.
+
+#### A real source-loss event: the phone survived, the network did not
+
+On **2026-09-15** external power disappeared for about 13 minutes. With
+`inhibit-charge` active at the moment of loss, the phone switched to battery
+without a reset, discharging at −120 to −270 mA (`voltage_avg` 4.180 → 4.100 V;
+`voltage_now` dipped to 4.061 V under load). `phoenix-typec-recover` logged
+"stuck as source … above threshold, deferring" three times, as designed, and
+when power returned the Type-C stack went back to sink by itself. This rules
+out the earlier (retracted) idea that unplugging while inhibited hard-resets
+the phone.
+
+**It did not keep the network up.** The journal timeline:
+
+| UTC | event |
+| --- | --- |
+| 04:40:48 | power lost; whole USB tree disconnects, `eth0` unregistered, NetworkManager `DISCONNECTED` |
+| 04:40:51 | phone now sourcing VBUS; dock hubs and the `wch.cn USB 10/100 LAN` adapter re-enumerate, `eth0` registered, carrier up, DHCP starts |
+| 04:40:57 | **carrier lost** — the adapter stays enumerated, but the Ethernet link is down |
+| 04:54:27 | power returns; USB tree re-enumerates again |
+| 04:55:34 | DHCP lease `192.168.1.101`, NetworkManager `CONNECTED_SITE` |
+
+So the phone kept the dock and its USB Ethernet adapter powered throughout, but
+the link went down six seconds in and the network was unavailable for about
+15 minutes. Losing carrier while the adapter itself stayed present points at
+the far end — consistent with the router or switch sharing the mains outage —
+but the router is not observable from here, so that is an inference, not a
+finding. An earlier version of this section said the phone "kept powering the
+dock and its Ethernet"; that was wrong as a statement about connectivity.
+
+#### After the outage: APSD never re-resolved, and inhibit started leaking
+
+| window | TCPM (selected) | APSD `usb_type` | settled ICL | mean cell current | samples > +20 mA | daily mean `voltage_avg` |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| Sep 12–14 | `[C]` Type-C current, 5 V / 3 A, no PD | `DCP` | 900–950 mA | **+0.5 mA** | 0.0% | 4.197 → 4.184 V, **falling ~6.5 mV/day** |
+| Sep 16–27 | `[PD]` explicit contract, one fixed 5 V / 2 A PDO | *(empty — unresolved)* | 500 mA | **+2.7 mA** | ~7% | 4.154 → 4.166 V, **rising ~1.2 mV/day** |
+
+The power return flipped the dock from Type-C current into a PD contract, and
+APSD has not classified the source since. (The partner's
+`usb_power_delivery_revision` reads `0.0` in both regimes; that attribute is
+simply unset here, so the TCPM `usb_type` selection and
+`power_operation_mode = usb_power_delivery` are the reliable signals.)
+
+With APSD unresolved the driver takes the TCPM-fallback branch of
+`smb_status_change_work`, which — in code inherited from upstream, with the
+fallback inserted by patch 0008 — **reruns APSD and reschedules itself after
+1 s, then returns without reaching the 15 s revalidation path**. Dynamic debug
+confirmed the loop is live (`Apsd not ready` → `get charger type failed, rerun
+apsd`, repeating). The source holds an explicit PD contract, which the guarded
+fallback accepts (`USB ICL 1500000 uA selected from TCPM fallback`), but
+APSD's BC1.2 detection never classifies it, so the loop never terminates.
+Hardware AICL meanwhile settles at 500 mA below the programmed 1.5 A.
+
+In the same regime, a 20 Hz capture shows positive current pulses of **+28 to
++32 mA lasting ≥0.25 s, roughly every 12–15 s**, while `charge_behaviour`
+reads `inhibit-charge` and the charger reports `Not charging`.
+
+The size of the effect is small, and an earlier version of this section
+overstated it. The 4.06 V figure was `voltage_now` under load *during* the
+outage, not a resting value; `voltage_avg` recovered to about 4.154 V by the end
+of September 15. Daily means then rose from 4.1541 V (Sep 16) to 4.1664 V
+(Sep 26): **+12 mV over ten days**, against a pre-outage trend of −6.5 mV/day.
+The gauge's positive current should not be read as stored charge until it is
+checked. Integrating its `current_now` over Sep 16–26 gives **+705 mAh**, about
+16% of the 4,500 mAh design capacity, over a period in which the daily-mean
+voltage rose 12 mV. Together they suggest the gauge current needs independent
+validation (an inline USB meter, or a coulomb count across a controlled
+discharge). The comparison cannot say how large a rise
+705 mAh should have produced, or prove a current offset: both need a calibrated
+voltage–capacity curve for this cell, which the port does not have (qcom_qg's
+capacity is itself a linear voltage estimate). Before the outage the same gauge
+averaged +0.5 mA while the voltage fell, which is consistent with a small
+positive bias but does not establish one.
+
+What is established: the regime change (resolved DCP → unresolved PD), the
+unbounded rerun loop in that regime, positive pulses in that regime only, and a
+reversal of the voltage trend from falling to slowly rising. What is **not**
+established: that the reruns cause the pulses (their period does not match the
+~1–4 s rerun cadence), or how much of the pulse current is real charge.
+
+Practical consequences and options:
+
+- Observed bounds: `voltage_avg` peaked at 4.182 V, below the 4.400 V design
+  maximum, and cell temperature stayed ≤ 35 °C. No hazard was observed; that
+  is an observation over twelve days, not a validation of the cutoffs.
+- It does defeat the 4.10 V storage target: the limiter can only inhibit, and
+  nothing stops an upward creep while inhibited.
+- Physically re-plugging the adapter into the dock may restore the pre-outage
+  Type-C current + `DCP` state; untested. Expect the regime to recur after power
+  events.
+- Patch 0018 (float ceiling) is expected to make the leak irrelevant: with the
+  float voltage programmed to the target, the charger should not push the cell
+  above it whatever the pulses are. That is a prediction from the register
+  semantics, not a result; the patch has not been compiled or run on the phone.
+- The rerun loop should be bounded in the next kernel (e.g. stop rerunning
+  after ~10 unresolved attempts once a valid TCPM fallback is applied, then fall
+  through to the 15 s revalidation). Not written yet: it could not be
+  compiled or tested in this pass.
+
+#### Code review of the committed work (f73d957)
+
+The commit captured three edits made after the previous session, which the
+device had never received. All three were reviewed and kept:
+`urllib.parse` query decoding (the hand-rolled parser never percent-decoded, so
+a unit such as `bootmac@bluetooth.service` arrived as `%40` and was rejected),
+`battery_preflight` failing closed on an implausible or missing voltage, and a
+chart-reveal fix; plus a float-mode rule that the limiter never *raises* a
+ceiling that is already lower.
+
+Defects found and fixed (r35, deployed):
+
+| area | defect | fix |
+| --- | --- | --- |
+| console | IPv6 listeners guessed: loopback `[::1]:631` shown as `[::]` (all addresses) | proper `/proc/net/tcp6` decoding (four host-order words) |
+| console | cache helper defined after `BATTERY` starts its thread at import | moved ahead of the samplers |
+| console | `BatterySampler._loop` had no exception guard — one error ends battery history | guarded like `SystemSampler` |
+| console | integration gap fixed at 15 s while `SAMPLE_SECONDS` became configurable | `max(15, 3 × interval)` |
+| console | mWh from avg(V)×avg(I), unlike `phoenix-battery-report` | mean of power |
+| console | `systemctl is-active` ×3 forked every 5 s by the sampler loop | cached 30 s |
+| console | 250-process `/proc` scan every 5 s with nobody viewing | scan only while a viewer requested processes in the last 60 s; count via `scandir` |
+| console | thermal guard swept all 28 zones twice every 5 s (directly and via `RUNTIME.status()`) with no model loaded, and each sampler swept them again | guard checks for a running runtime first; thermal sweeps shared through a 4 s cache keyed by root — found by the audit follow-up below |
+| console | the cache helper ran its computation outside the lock, so callers that missed at the same moment each ran it; "one shared read" was not guaranteed (found by the second audit) | single-flight per key: one computation per TTL while concurrent callers wait for it; a concurrency test sees 4 reads on the old code and 1 on the new |
+| telemetry | ~90 forks per sample (`$(read_attr)` → subshell, cat, printf, tr per field) | shell builtins; output compared byte-identical against the committed version, and now pinned by a golden-row regression test |
+| charge-cap | float-mode "never raise" logged every minute indefinitely | log once per distinct value; raise workflow documented in the conf. Not exercised on hardware: the running kernel has no `constant_charge_voltage` |
+| charge-cap | float control would take over automatically on any kernel exposing `constant_charge_voltage`, although patch 0018 has never run on hardware and float mode has no deficit guard | opt-in with `FLOAT_CONTROL=1` (default 0, inhibit-charge); `reset` still restores a lowered ceiling after opting out; covered by tests |
+| adapter-test | deleted the limiter's ownership/lockout markers and never restored the original `charge_behaviour` | restores what was in force; markers untouched; now covered by a test against a fake sysfs (`PROC_ROOT` override added for it) |
+
+Idle CPU, no dashboard viewer, in percent of one core:
+
+| | old code (20-day systemd average) | first r35 pass (7 h systemd average) | r35 + thermal fix (two 10-min windows) | + single-flight cache (one 10-min window) |
+| --- | ---: | ---: | ---: | ---: |
+| Phoenix Console | 2.83% | 1.51% | **0.63% / 0.75%** | 0.50% |
+| telemetry logger | 1.74% | 0.18% | **0.19%** | — |
+| whole system | ≈7.0% | — | **3.04%** | — |
+
+An earlier version of this table reported the first r35 pass as 0.74% for the
+console and 3.29% for the whole system. Those came from a single 3-minute window
+just after deployment and did not hold: the independent audit could not
+reproduce them, and the service's own 7-hour accounting showed 1.51%. A
+per-thread breakdown then put 0.58% on the thermal guard and most of the rest
+on duplicate thermal sweeps, which the fix above removed. Numbers here are
+reproducible with `systemctl show <unit> -p CPUUsageNSec` over the unit's
+active time, or from the unit's cgroup `cpu.stat` over a fixed window. The
+single-flight window (0 requests, battery sampler 0.22%, system sampler 0.20%,
+thermal guard 0.00%) is one sample; the two earlier windows already differed by
+0.12 points, so it shows no regression but does not attribute the lower figure
+to that change.
+
+Monitoring had been about two-thirds of all CPU this server spends
+(4.57 of ≈7.0%); it is now roughly 30% (≈0.9 of 3.04%). Test suites: battery
+tools (float-external, opt-in float control, plausibility, golden telemetry
+row, adapter-test cleanup), sync, and console (25 tests, including the
+previously untested post-session edits and the concurrent-miss case) all pass.
+
+Still open:
+
+- **Patch 0018 has never been compiled.** It applies cleanly to the 7.1_rc3
+  tree, but no configured tree or builder was available in either session.
+  What this document says float capping will do (hold the cell at the target,
+  make the leak irrelevant, need less headroom than the inhibit) is a
+  prediction from the register semantics until it runs on the phone, which is
+  why the limiter now uses it only with `FLOAT_CONTROL=1`.
+- **Device drift.** The installed package is still `device-xiaomi-phoenix-1-r27`;
+  everything since has been installed by hand over it (backups under
+  `/var/backups/phoenix-*`). `apk fix` would revert those files. The durable
+  path is building r35 and installing it. The hand-deployed files do match the
+  local r35 sources by SHA-512 (verified independently in both audits, and
+  again after each follow-up deploy).
+- **Uncommitted.** The r35 work is local only; `origin/main` is still `f73d957`.
+- The console's per-PID signal check is a usability guard, not the security
+  boundary — the kernel refuses an unprivileged `kill()` of root processes
+  regardless. The real exposures remain the empty `API_TOKEN` and Portainer,
+  whose admin is effectively root on the phone through the podman socket.
+
 ## Production-safety validation matrix
 
 ### Adapter-first operation: subsequent register audit
@@ -1639,10 +1819,11 @@ paths on this hardware. New kernel patch 0018 exposes `constant_charge_voltage`
 (`FLOAT_VOLTAGE_CFG`, 7.5 mV/step from 3.4875 V) as a writable property, with
 writes rejected outside `[3487500, voltage_max_design_uv]` so userspace can
 lower the ceiling but never raise it above the device tree maximum. Capping the
-float voltage leaves `CHARGING_ENABLE_CMD_BIT` set, so the charger keeps
-regulating and the cell simply rests at the ceiling with taper current near
-zero. `phoenix-charge-cap.sh` now prefers this mode automatically and falls back
-to `inhibit-charge` only when the property is absent. Patch 0018 applies cleanly
+float voltage leaves `CHARGING_ENABLE_CMD_BIT` set, so the charger is expected
+to keep regulating, with the cell resting at the ceiling and taper current near
+zero. `phoenix-charge-cap.sh` was written to prefer this mode automatically;
+since 2026-09-27 it is opt-in (`FLOAT_CONTROL=1`) until that expectation has
+been checked on the phone. Patch 0018 applies cleanly
 to the 7.1_rc3 tree with patches 0001-0017 applied; it is **not yet compiled or
 hardware-tested**. The userspace policy is lower-only too: if firmware or
 another controller already selected a ceiling below its target, it preserves
@@ -1657,9 +1838,14 @@ status` reports the active control mode, the input power, and an explicit
 OK/DEFICIT/ON BATTERY verdict.
 
 Note also that the 9 V PD contract observed on 2026-09-05 is gone: the attached
-dock now enumerates as a non-PD path (`usb_power_delivery_revision 0.0`,
-`usb_type [DCP]`), so the source is limited to 5 V. That reduces available
-headroom but, per the A/B test above, is not what caused the discharge.
+dock now enumerates as a non-PD path (TCPM `usb_type` selected `[C]`, i.e.
+Type-C current rather than a PD contract; the partner's
+`usb_power_delivery_revision 0.0` cited originally turned out to be unset in
+PD mode too and is not evidence on its own;
+`usb_type [DCP]`), so the source is limited to 5 V. That lowers the input
+headroom, which the cable comparison below identified as what decides whether
+an inhibit holds; the A/B test above showed only that the same 5 V source could
+carry the load in `auto`.
 
 #### Hardware validation of the deficit guard — 2026-09-06 04:57 UTC
 
@@ -1753,9 +1939,12 @@ sustained CPU load with `inhibit-charge` active, USBIN draws only 740 mA /
 `auto` drew about 1 A / 4.83 W and left the battery at +21.3 mA. Inhibiting
 consistently reduces how much the input delivers; a stronger adapter shrinks the
 shortfall (-147 mA -> -58 mA) but does not remove it. For a mostly idle server
-this is acceptable. Eliminating it is what patch 0018 is for, since float
-capping leaves the charger regulating instead of handing the rail back to the
-cell.
+this is acceptable. Patch 0018 is meant to remove it, on the expectation that
+float capping keeps the charger regulating instead of handing the rail back to
+the cell. Nothing has measured that. In particular, the upstream driver clears
+`I_TERM_BIT` in `CHGR_CFG2`, which its own comment reads as leaving current
+termination enabled, and whether a terminated charger behaves like an inhibited
+one under load is unknown.
 
 #### Power-path verification matrix — 2026-09-06 15:30 UTC
 
@@ -1792,11 +1981,16 @@ zone from 41 C to 86 C in 30 seconds. Sustained full-load operation is not
 viable on this hardware without active cooling, which also bounds any llama.cpp
 plan.
 
-Practical consequence: patch 0018 is no longer the only route to the goal, but it
-remains the better one. Float capping removes the hysteresis cycle entirely and
-does not depend on path headroom, whereas the inhibit path now works only while
-the cable stays good. The adapter-deficit guard remains valuable precisely
-because it catches the cable-1 case automatically.
+Practical consequence: patch 0018 is no longer the only route to the goal, and
+whether it is the better one is a prediction. Float capping would replace the
+limiter's 100 mV hysteresis with the PMIC's own termination and recharge
+behaviour (the driver also leaves auto-recharge enabled, so a smaller cycle
+remains), and at idle it may need less headroom than the inhibit: through
+cable 1, `auto` still charged at +35 mA where the inhibit drained −35 mA. Under
+load no control mode substitutes for a good path; cable 1 drained the cell in
+`auto` too (−147 mA). The inhibit path works while the cable stays good, and the
+adapter-deficit guard remains valuable precisely because it catches the cable-1
+case automatically.
 
 Both CPU policies were also moved from `performance` to `schedutil` for the
 measurement, which cut system load from 0.739 W to 0.568 W but did not by itself
@@ -1808,7 +2002,8 @@ Interim expectation until patch 0018 is installed: with the deficit guard active
 the limiter will keep the charger in `auto`, so the cell will rest near the
 device tree float of about 4.4 V rather than at the intended 4.10 V ceiling.
 That is a deliberate trade -- a high resting voltage ages the cell, but draining
-it to the shutdown guard is worse -- and it is exactly what patch 0018 removes.
+it to the shutdown guard is worse -- and it is what patch 0018 is intended to
+remove.
 
 | Test | Required result |
 | --- | --- |

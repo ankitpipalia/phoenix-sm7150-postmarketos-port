@@ -163,41 +163,58 @@ or full capacity; that still requires a controlled charge/discharge experiment.
 
 The goal is laptop-style operation: run the phone from the adapter and keep the
 cell off its maximum resting voltage, so the battery serves as a UPS instead of
-a cycling energy store. `phoenix-charge-cap.sh` has two control modes and picks
-whichever the running kernel supports.
+a cycling energy store. `phoenix-charge-cap.sh` has two control modes:
+`inhibit-charge` by default, and float voltage as an opt-in for kernels that
+carry patch 0018.
 
-### Float-voltage mode (preferred, kernel patch 0018)
+### inhibit-charge mode (default, kernel patch 0010)
 
-When `pm8150b-charger/constant_charge_voltage` is writable, the limiter programs
+It applies voltage hysteresis at `START_VOLTAGE_UV`/`STOP_VOLTAGE_UV` by writing
+`auto` or `inhibit-charge`, and verifies both that inhibition sticks and that
+USB input stays online.
+
+Whether this gives adapter-first operation depends on the input path. On
+adapter 2 with cable 2 (about 0.36 ohm), the 2026-09-06 power-path matrix
+measured the cell at +0.4 mA idle and +5.3 mA with one core loaded while the
+adapter carried the system; under two continuous `dd` workers the cell supplied
+-58 mA. Through cable 1 (about 1 ohm) the same inhibit measured -35 mA average
+at 4.32 V, against +32..+80 mA from the same source in `auto`: the charger
+cannot hold VSYS above the cell, USBIN settles near its 50 mA floor, and the
+battery supplies most of the load. The limiter therefore carries an
+adapter-deficit guard -- a sustained discharge above `DEFICIT_CURRENT_UA` while
+input is online releases the owned inhibit, arms a `DEFICIT_LOCKOUT_SECONDS`
+lockout, and logs at warning level. A missing or unreadable current channel
+proves nothing and never releases an inhibit.
+
+Since the 2026-09-15 power outage the dock has held a 5 V / 2 A PD contract that
+APSD never classifies, and the inhibited cell's daily-mean voltage has crept up
+by about 12 mV over ten days. `Findings&Fixes.md` records what is and is not
+established about that regime.
+
+### Float-voltage mode (opt-in, kernel patch 0018)
+
+Used only when `FLOAT_CONTROL=1` in `/etc/phoenix-charge-cap.conf` and
+`pm8150b-charger/constant_charge_voltage` is writable. The limiter programs
 `STOP_VOLTAGE_UV` as the charger's float ceiling and leaves
-`charge_behaviour=auto`. `CHARGING_ENABLE_CMD_BIT` stays set, so the charger
-keeps regulating: the adapter carries the system, the cell charges to the
-ceiling and then rests there with taper current near zero, and no hysteresis is
-needed because the hardware holds the setpoint. `START_VOLTAGE_UV` is unused in
-this mode -- the PMIC's own recharge threshold applies.
+`charge_behaviour=auto`. The intent is that, with `CHARGING_ENABLE_CMD_BIT`
+still set, the charger keeps regulating: the adapter carries the system, the
+cell charges to the ceiling and rests there with taper current near zero, and
+the PMIC's own recharge threshold replaces the limiter's hysteresis
+(`START_VOLTAGE_UV` is unused in this mode).
+
+**None of that has been observed.** Patch 0018 has never been compiled or run
+on the phone, and this mode has no deficit guard, which is why it is opt-in.
+Enable it for a watched test, check `phoenix-charge-cap status` and the battery
+current under idle and load, and only then leave it unattended. To go back, set
+`FLOAT_CONTROL=0` and start `phoenix-charge-cap-reset.service`.
 
 The register quantises to 7.5 mV from a 3.4875 V base and the driver truncates,
 so the readback sits at or just below the request; the limiter treats anything
 within one step as already programmed and does not rewrite it. `reset` restores
-the ceiling that was in place before the limiter lowered it. If firmware or
-another controller has already selected a lower ceiling, the limiter leaves it
-unchanged and does not claim ownership; it never raises an existing limit.
-
-### inhibit-charge mode (fallback, kernel patch 0010)
-
-Used only when the float property is absent. It applies voltage hysteresis at
-`START_VOLTAGE_UV`/`STOP_VOLTAGE_UV` by writing `auto` or `inhibit-charge`, and
-verifies both that inhibition sticks and that USB input stays online.
-
-**This mode does not achieve adapter-first operation on this hardware.** An A/B
-test on 2026-09-06 at 4.32 V measured -35 mA average with `inhibit-charge`
-against +32..+80 mA from the same source in `auto`: clearing the charge-enable
-bit lets USBIN settle near its 50 mA floor while the battery supplies most of
-the system load. The limiter therefore carries an adapter-deficit guard -- a
-sustained discharge above `DEFICIT_CURRENT_UA` while input is online releases the
-owned inhibit, arms a `DEFICIT_LOCKOUT_SECONDS` lockout, and logs at warning
-level. A missing or unreadable current channel proves nothing and never releases
-an inhibit.
+the ceiling that was in place before the limiter lowered it, whatever
+`FLOAT_CONTROL` says. If firmware or another controller has already selected a
+lower ceiling, the limiter leaves it unchanged and does not claim ownership; it
+never raises an existing limit.
 
 ### Sensor plausibility
 

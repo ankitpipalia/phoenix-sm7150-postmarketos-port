@@ -11,16 +11,16 @@ the input into repeated AICL collapse, so USBIN settles near its 50 mA floor and
 the battery supplies most of the system load.  Measured at 4.32 V that was
 -35 mA average.  Replacing the cable to bring the path to roughly 0.25-0.4 ohm
 restored the intended behaviour on the same adapter (+1.5 mA average), so
-inhibit-charge works when, and only when, the path has enough headroom for the
-charger to hold VSYS above the cell.
+inhibit-charge depends on the path having enough headroom for the charger to
+hold VSYS above the cell.
 
-Capping the charge voltage is the more robust control.  With
-CHARGING_ENABLE_CMD_BIT left set the charger keeps regulating rather than
-handing the rail back to the battery, and the cell rests at the programmed float
-voltage with taper current near zero - the behaviour laptop firmware implements
-for a "stop charging at 80%" setting.  It also removes the hysteresis cycle
-entirely: there is no discharge down to a resume threshold, because the cell is
-simply never charged above the ceiling.
+Capping the charge voltage is expected to be the more robust control.  With
+CHARGING_ENABLE_CMD_BIT left set the charger should keep regulating rather than
+hand the rail back to the battery, and the cell should rest at the programmed
+float voltage with taper current near zero - the behaviour laptop firmware
+implements for a "stop charging at 80%" setting - with the PMIC's own recharge
+threshold in place of a policy daemon's hysteresis.  That expectation comes
+from the register semantics and has not yet been observed on this hardware.
 
 FLOAT_VOLTAGE_CFG is already programmed once at probe from the device tree
 battery description.  Expose it as CONSTANT_CHARGE_VOLTAGE so a policy daemon

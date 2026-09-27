@@ -3,6 +3,8 @@ import importlib.util
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -208,6 +210,8 @@ class ManagerTests(unittest.TestCase):
         self.assertIn("t", first)
         self.assertEqual(len(sampler.history), 2)
         self.assertIsInstance(second["mem_used"], int)
+        # A viewer is on the Tasks page, so the table is live, not rescanned.
+        sampler._process_demand_until = manager.time.monotonic() + 60
         sampler.processes = [
             {"pid": 10, "name": "zeta", "cmdline": "zeta --x", "user": "user", "cpu_percent": 5.0, "rss_bytes": 100, "elapsed_s": 5},
             {"pid": 20, "name": "alpha", "cmdline": "/usr/bin/alpha", "user": "root", "cpu_percent": 1.0, "rss_bytes": 900, "elapsed_s": 50},
@@ -238,6 +242,184 @@ class ManagerTests(unittest.TestCase):
             finally:
                 manager.POWER_ROOT = original
             self.assertEqual(snap["charger"]["input_power_w"], 1.5)
+
+    # ---- 2026-09-27 recheck: fixes and previously untested post-session edits ----
+    def test_decode_proc_addr_ipv4_and_ipv6(self):
+        self.assertEqual(manager.decode_proc_addr("0100007F"), "127.0.0.1")
+        self.assertEqual(manager.decode_proc_addr("00000000"), "0.0.0.0")
+        # loopback must never be rendered as "all addresses"
+        self.assertEqual(manager.decode_proc_addr("00000000000000000000000001000000"), "::1")
+        self.assertEqual(manager.decode_proc_addr("00000000000000000000000000000000"), "::")
+        self.assertEqual(manager.decode_proc_addr("0000000000000000FFFF00000100007F"), "::ffff:127.0.0.1")
+        with self.assertRaises(ValueError):
+            manager.decode_proc_addr("0100")
+
+    def test_listening_ports_keeps_loopback_ipv6_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "net").mkdir()
+            (root / "net" / "tcp").write_text("  sl local rem st\n")
+            (root / "net" / "tcp6").write_text(
+                "  sl  local_address rem_address st\n"
+                "   0: 00000000000000000000000001000000:0277 00000000000000000000000000000000:0000 0A 0 0 0 0 0 0 0 0\n"
+                "   1: 00000000000000000000000000000000:0016 00000000000000000000000000000000:0000 0A 0 0 0 0 0 0 0 0\n")
+            original = manager.PROC_ROOT
+            manager.PROC_ROOT = root
+            try:
+                ports = manager.listening_ports()
+            finally:
+                manager.PROC_ROOT = original
+            self.assertEqual([(p["port"], p["host"]) for p in ports], [(22, "::"), (631, "::1")])
+
+    def test_query_string_is_percent_decoded(self):
+        handler = manager.Handler.__new__(manager.Handler)
+        handler.path = "/api/journal?unit=bootmac%40bluetooth.service&q=a+b&lines=50&empty="
+        q = handler._query()
+        self.assertEqual(q["unit"], "bootmac@bluetooth.service")
+        self.assertEqual(q["q"], "a b")
+        self.assertEqual(q["lines"], "50")
+        self.assertEqual(q["empty"], "")
+        self.assertTrue(manager.UNIT_NAME.match(q["unit"]))
+
+    def test_battery_preflight_fails_closed_without_plausible_voltage(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            charger, battery = root / "pm8150b-charger", root / "qcom_qg"
+            charger.mkdir(); battery.mkdir()
+            (charger / "online").write_text("1")
+            (battery / "voltage_avg").write_text("6377865")  # boot glitch, and no voltage_now
+            original = manager.POWER_ROOT
+            manager.POWER_ROOT = root
+            try:
+                with self.assertRaisesRegex(RuntimeError, "unavailable or implausible"):
+                    manager.battery_preflight()
+            finally:
+                manager.POWER_ROOT = original
+
+    def test_process_table_is_lazy_when_nobody_is_looking(self):
+        sampler = manager.SystemSampler(start=False, maxlen=4, interval=1)
+        calls = []
+        real = sampler._process_table
+        sampler._process_table = lambda delta: (calls.append(delta), real(delta))[1]
+        sampler.sample_once(); sampler.sample_once()
+        self.assertEqual(calls, [], "idle sampler must not scan /proc/<pid>")
+        self.assertIsInstance(sampler.snapshot()["process_count"], int)
+        sampler.process_report("cpu")          # a viewer arrives: immediate table
+        self.assertEqual(len(calls), 1)
+        sampler.sample_once()                  # and the loop keeps it fresh while in demand
+        self.assertEqual(len(calls), 2)
+        sampler._process_demand_until = 0      # viewer left
+        sampler.sample_once()
+        self.assertEqual(len(calls), 2)
+
+    def test_battery_sampler_survives_errors_and_integrates_power(self):
+        sampler = manager.BatterySampler(start=False)
+        snaps = iter([
+            {"timestamp": 1.0, "battery": {"current_now": -100000, "voltage_now": 4000000}, "charger": {}},
+            {"timestamp": 2.0, "battery": {"current_now": -300000, "voltage_now": 3800000}, "charger": {}},
+        ])
+        sampler.snapshot = lambda: next(snaps)
+        clock = iter([100.0, 110.0])
+        original = manager.time.monotonic
+        manager.time.monotonic = lambda: next(clock)
+        try:
+            sampler._sample(); sampler._sample()
+        finally:
+            manager.time.monotonic = original
+        # 10 s: charge = 0.2 A avg -> 0.5556 mAh; energy = mean(P) = (0.4 W + 1.14 W)/2
+        self.assertAlmostEqual(sampler.discharged_mah, 200000 * 10 / 3_600_000, places=6)
+        self.assertAlmostEqual(sampler.discharged_mwh, (0.4e12 + 1.14e12) / 2 * 10 / 3_600_000_000_000, places=6)
+        # an exception inside one sample must not escape the loop body
+        sampler.snapshot = lambda: (_ for _ in ()).throw(OSError("transient"))
+        with self.assertRaises(OSError):
+            sampler._sample()   # _sample raises; _loop wraps it (checked below)
+        self.assertIn("except Exception", __import__("inspect").getsource(manager.BatterySampler._loop))
+
+    def test_cache_helper_is_defined_before_the_battery_sampler(self):
+        source = Path(MODULE_PATH).read_text()
+        self.assertLess(source.index("def cached("), source.index("BATTERY = BatterySampler("))
+
+    def test_thermal_guard_does_nothing_without_a_runtime(self):
+        original_snapshot, original_state = manager.thermal_snapshot, manager.RUNTIME._state
+        def forbidden():
+            raise AssertionError("thermal zones read with no runtime running")
+        manager.thermal_snapshot = forbidden
+        manager.RUNTIME._state = lambda: {}
+        try:
+            self.assertEqual(manager.thermal_guard_step(2), 0)
+        finally:
+            manager.thermal_snapshot, manager.RUNTIME._state = original_snapshot, original_state
+
+    def test_thermal_guard_stops_a_hot_runtime_after_three_ticks(self):
+        saved = (manager.thermal_snapshot, manager.RUNTIME._state, manager.RUNTIME._owned_pid, manager.RUNTIME.stop)
+        stops = []
+        manager.thermal_snapshot = lambda: {"hottest": {"name": "cpu7-thermal", "temp_c": manager.CONFIG.thermal_critical_c + 1}}
+        manager.RUNTIME._state = lambda: {"pid": 4242}
+        manager.RUNTIME._owned_pid = lambda pid: pid == 4242
+        manager.RUNTIME.stop = lambda: stops.append(1)
+        try:
+            n = 0
+            for _ in range(2):
+                n = manager.thermal_guard_step(n)
+            self.assertEqual((n, stops), (2, []))
+            self.assertEqual(manager.thermal_guard_step(n), 0)
+            self.assertEqual(stops, [1])
+            # a cool reading resets the count
+            manager.thermal_snapshot = lambda: {"hottest": {"name": "cpu7-thermal", "temp_c": 50.0}}
+            self.assertEqual(manager.thermal_guard_step(2), 0)
+        finally:
+            (manager.thermal_snapshot, manager.RUNTIME._state, manager.RUNTIME._owned_pid, manager.RUNTIME.stop) = saved
+
+    def test_thermal_reads_are_reused_within_the_ttl(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            zone = root / "thermal_zone0"; zone.mkdir()
+            (zone / "type").write_text("cpu0-thermal"); (zone / "temp").write_text("40000")
+            original = manager.THERMAL_ROOT
+            manager.THERMAL_ROOT = root
+            calls = []
+            real = manager._read_thermal_zones
+            manager._read_thermal_zones = lambda: (calls.append(1), real())[1]
+            try:
+                first = manager.thermal_snapshot()
+                (zone / "temp").write_text("99000")          # changes within the TTL are not re-read
+                second = manager.thermal_snapshot()
+            finally:
+                manager.THERMAL_ROOT, manager._read_thermal_zones = original, real
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(first, second)
+            self.assertEqual(first["hottest"]["temp_c"], 40.0)
+
+    def test_thermal_callers_that_miss_together_share_one_read(self):
+        # The sweep is held open while the other callers arrive; without
+        # single-flight each of them would start its own sweep.
+        with tempfile.TemporaryDirectory() as temporary:
+            original, real = manager.THERMAL_ROOT, manager._read_thermal_zones
+            manager.THERMAL_ROOT = Path(temporary)
+            calls, release, results = [], threading.Event(), []
+            def slow_read():
+                calls.append(1)
+                release.wait(5)
+                return real()
+            manager._read_thermal_zones = slow_read
+            start = threading.Barrier(4)
+            def caller():
+                start.wait()
+                results.append(manager.thermal_snapshot())
+            threads = [threading.Thread(target=caller) for _ in range(4)]
+            try:
+                for thread in threads:
+                    thread.start()
+                time.sleep(0.3)
+                release.set()
+                for thread in threads:
+                    thread.join(5)
+            finally:
+                release.set()
+                manager.THERMAL_ROOT, manager._read_thermal_zones = original, real
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(results), 4)
+            self.assertTrue(all(r is results[0] for r in results))
 
 if __name__ == "__main__":
     unittest.main()

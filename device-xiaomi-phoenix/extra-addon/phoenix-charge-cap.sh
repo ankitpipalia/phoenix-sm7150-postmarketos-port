@@ -7,7 +7,8 @@
 set -eu
 
 _tunables="START_VOLTAGE_UV STOP_VOLTAGE_UV POWER_SUPPLY_ROOT RUN_DIR
-	DEFICIT_CURRENT_UA DEFICIT_SAMPLES DEFICIT_LOCKOUT_SECONDS PROC_ROOT"
+	DEFICIT_CURRENT_UA DEFICIT_SAMPLES DEFICIT_LOCKOUT_SECONDS PROC_ROOT
+	FLOAT_CONTROL"
 for _v in $_tunables; do
 	eval "_env_$_v=\${$_v-__unset__}"
 done
@@ -24,6 +25,11 @@ DEFICIT_CURRENT_UA=${DEFICIT_CURRENT_UA:-20000}
 DEFICIT_SAMPLES=${DEFICIT_SAMPLES:-5}
 DEFICIT_LOCKOUT_SECONDS=${DEFICIT_LOCKOUT_SECONDS:-1800}
 PROC_ROOT=${PROC_ROOT:-/proc}
+# Float-voltage control needs kernel patch 0018, which has never run on this
+# hardware, and the mode has no deficit guard, so it is opt-in: until
+# FLOAT_CONTROL=1 the limiter uses inhibit-charge even on a kernel exposing
+# constant_charge_voltage.
+FLOAT_CONTROL=${FLOAT_CONTROL:-0}
 
 [ -r /etc/phoenix-charge-cap.conf ] && . /etc/phoenix-charge-cap.conf
 [ -r /etc/default/phoenix-charge-cap ] && . /etc/default/phoenix-charge-cap
@@ -107,11 +113,12 @@ behaviour="$charger/charge_behaviour"
 state="$RUN_DIR/phoenix-charge-cap.inhibited"
 deficit="$RUN_DIR/phoenix-charge-cap.deficit"
 lockout="$RUN_DIR/phoenix-charge-cap.lockout"
-# Float-voltage control (kernel patch 0018).  Preferred over inhibit-charge:
-# the charger keeps regulating, so the adapter carries the system and the cell
-# simply rests at the programmed ceiling instead of cycling against it.
+# Float-voltage control (kernel patch 0018, opt-in).  The intent is that the
+# charger keeps regulating, so the adapter carries the system and the cell rests
+# at the programmed ceiling instead of cycling against it -- not yet observed.
 float_attr="$charger/constant_charge_voltage"
 float_state="$RUN_DIR/phoenix-charge-cap.float-original"
+float_external="$RUN_DIR/phoenix-charge-cap.float-external"
 
 # Read-only assessment of whether adapter-first operation is actually being
 # achieved.  Deliberately available even when charge_behaviour is missing.
@@ -130,8 +137,14 @@ if [ "${1:-}" = "status" ]; then
 	if valid_int "$_raw_iavg" && ! plausible_current "$_raw_iavg"; then
 		printf 'warning:           current_avg reads %s uA (implausible, ignored)\n' "$_raw_iavg"
 	fi
-	printf 'control mode:      %s\n' \
-		"$([ -w "$float_attr" ] && echo 'float voltage (adapter-first)' || echo 'inhibit-charge (fallback)')"
+	if [ -w "$float_attr" ] && [ "$FLOAT_CONTROL" = 1 ]; then
+		_mode='float voltage'
+	elif [ -w "$float_attr" ]; then
+		_mode='inhibit-charge (float available, FLOAT_CONTROL=0)'
+	else
+		_mode='inhibit-charge (no float control in kernel)'
+	fi
+	printf 'control mode:      %s\n' "$_mode"
 	printf 'charge_behaviour:  %s\n' "$(cat "$behaviour" 2>/dev/null || echo unavailable)"
 	# status is what an operator reaches for when the configuration is wrong,
 	# so it must not do arithmetic on an unvalidated threshold.
@@ -171,7 +184,7 @@ if [ "${1:-}" = "status" ]; then
 fi
 
 use_float=0
-[ -w "$float_attr" ] && use_float=1
+[ "$FLOAT_CONTROL" = 1 ] && [ -w "$float_attr" ] && use_float=1
 
 if [ "$use_float" -eq 0 ] && [ ! -w "$behaviour" ]; then
 	logger -p daemon.err -t phoenix-charge-cap \
@@ -198,7 +211,7 @@ if [ "${1:-}" = "reset" ]; then
 			exit 1
 		fi
 	fi
-	rm -f "$deficit" "$lockout"
+	rm -f "$deficit" "$lockout" "$float_external"
 	if [ ! -e "$state" ]; then
 		logger -p daemon.info -t phoenix-charge-cap "reset: no owned inhibit, nothing to do"
 		exit 0
@@ -242,11 +255,11 @@ if [ "$START_VOLTAGE_UV" -lt 3400000 ] || [ "$STOP_VOLTAGE_UV" -gt 4400000 ]; th
 	exit 1
 fi
 
-# ---- Preferred mode: cap the float voltage, leave charging enabled ---------
-# The cell rests at the ceiling with taper current near zero, the charger keeps
-# regulating, and the adapter carries the system.  No hysteresis is needed --
-# the hardware holds the setpoint -- so START_VOLTAGE_UV is unused here and the
-# recharge threshold is the PMIC's own.
+# ---- Float mode (opt-in): cap the float voltage, leave charging enabled ----
+# Intended: the cell rests at the ceiling with taper current near zero, the
+# charger keeps regulating, and the adapter carries the system, so the limiter
+# needs no hysteresis of its own -- START_VOLTAGE_UV is unused here and the
+# recharge threshold is the PMIC's own.  Untested on hardware (patch 0018).
 if [ "$use_float" -eq 1 ]; then
 	if [ -e "$state" ]; then
 		# Float control supersedes a legacy inhibit we own; drop it so the
@@ -276,10 +289,16 @@ if [ "$use_float" -eq 1 ]; then
 	# Even with a marker, never raise a value that another controller may have
 	# lowered since our last run; reset is the explicit restoration operation.
 	if [ "$current_float" -lt "$STOP_VOLTAGE_UV" ]; then
-		logger -p daemon.info -t phoenix-charge-cap \
-			"float ceiling ${current_float}uV is already below target ${STOP_VOLTAGE_UV}uV; leaving the safer external limit unchanged"
+		# Log once per distinct value; the timer runs every minute and this
+		# state can persist indefinitely.
+		if [ "$(cat "$float_external" 2>/dev/null || true)" != "$current_float" ]; then
+			printf '%s\n' "$current_float" > "$float_external"
+			logger -p daemon.info -t phoenix-charge-cap \
+				"float ceiling ${current_float}uV is already below target ${STOP_VOLTAGE_UV}uV; leaving the safer external limit unchanged (to raise it, run phoenix-charge-cap-reset.service first)"
+		fi
 		exit 0
 	fi
+	rm -f "$float_external"
 
 	[ -e "$float_state" ] || printf '%s\n' "$current_float" > "$float_state"
 	if ! printf '%s\n' "$STOP_VOLTAGE_UV" > "$float_attr" 2>/dev/null; then
@@ -289,7 +308,7 @@ if [ "$use_float" -eq 1 ]; then
 	fi
 	readback=$(cat "$float_attr" 2>/dev/null || echo unknown)
 	logger -t phoenix-charge-cap \
-		"float ceiling ${readback}uV (requested ${STOP_VOLTAGE_UV}uV, was ${current_float}uV); charging stays enabled so the adapter carries the system"
+		"float ceiling ${readback}uV (requested ${STOP_VOLTAGE_UV}uV, was ${current_float}uV); charging stays enabled"
 	exit 0
 fi
 

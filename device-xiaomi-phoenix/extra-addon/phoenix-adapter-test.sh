@@ -23,6 +23,7 @@ RESULT_DIR=${RESULT_DIR:-/var/log/phoenix-adapter-tests}
 POWER_SUPPLY_ROOT=${POWER_SUPPLY_ROOT:-/sys/class/power_supply}
 TYPEC_ROOT=${TYPEC_ROOT:-/sys/class/typec}
 THERMAL_ROOT=${THERMAL_ROOT:-/sys/class/thermal}
+PROC_ROOT=${PROC_ROOT:-/proc}
 
 usage() {
 	cat <<'EOF'
@@ -191,10 +192,18 @@ if command -v systemctl >/dev/null 2>&1 &&
 	timer_was_active=1
 fi
 
+original_behaviour=$(selected "$behaviour")
+
 cleanup() {
 	trap - EXIT HUP INT TERM
 	kill $load_pids 2>/dev/null || true
 	wait 2>/dev/null || true
+	# Put back exactly what was in force: an inhibit owned by the limiter keeps
+	# its ownership marker (never touched here), and an external controller's
+	# inhibit is restored rather than silently dropped.
+	if [ -n "$original_behaviour" ] && [ "$(selected "$behaviour")" != "$original_behaviour" ]; then
+		printf '%s\n' "$original_behaviour" > "$behaviour" 2>/dev/null || true
+	fi
 	if [ "$timer_was_active" -eq 1 ]; then
 		systemctl start phoenix-charge-cap.timer 2>/dev/null || true
 	fi
@@ -207,8 +216,6 @@ if [ "$timer_was_active" -eq 1 ]; then
 fi
 if [ "$(selected "$behaviour")" = "inhibit-charge" ]; then
 	printf '%s\n' auto > "$behaviour" 2>/dev/null || true
-	rm -f /run/phoenix-charge-cap.inhibited /run/phoenix-charge-cap.deficit \
-		/run/phoenix-charge-cap.lockout 2>/dev/null || true
 	sleep 2
 fi
 if [ "$(selected "$behaviour")" != "auto" ]; then
@@ -257,8 +264,8 @@ echo "  phases     : ${IDLE_SECONDS}s idle + $([ "$no_load" -eq 1 ] && echo "no 
 echo
 
 sample_phase() {
-	_phase=$1; _dur=$2; _end=$(( $(cut -d' ' -f1 /proc/uptime | cut -d. -f1) + _dur ))
-	while [ "$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)" -lt "$_end" ]; do
+	_phase=$1; _dur=$2; _end=$(( $(cut -d' ' -f1 "$PROC_ROOT/uptime" | cut -d. -f1) + _dur ))
+	while [ "$(cut -d' ' -f1 "$PROC_ROOT/uptime" | cut -d. -f1)" -lt "$_end" ]; do
 		_t=$(hottest_c)
 		if [ "$_phase" = load ] && [ "$_t" -ge "$ABORT_TEMP_C" ]; then
 			echo "  ..  load phase stopped early at ${_t} C (expected on this SoC; the input ceiling is already resolved)"
@@ -283,9 +290,9 @@ if [ "$no_load" -eq 0 ]; then
 	_t=$(hottest_c)
 	if [ "$_t" -ge "$COOL_TEMP_C" ]; then
 		echo "  ...  cooling from ${_t} C to below ${COOL_TEMP_C} C (max ${COOL_WAIT_S}s)"
-		_deadline=$(( $(cut -d' ' -f1 /proc/uptime | cut -d. -f1) + COOL_WAIT_S ))
+		_deadline=$(( $(cut -d' ' -f1 "$PROC_ROOT/uptime" | cut -d. -f1) + COOL_WAIT_S ))
 		while [ "$(hottest_c)" -ge "$COOL_TEMP_C" ] &&
-		      [ "$(cut -d' ' -f1 /proc/uptime | cut -d. -f1)" -lt "$_deadline" ]; do
+		      [ "$(cut -d' ' -f1 "$PROC_ROOT/uptime" | cut -d. -f1)" -lt "$_deadline" ]; do
 			sleep 5
 		done
 		echo "  ...  starting load at $(hottest_c) C"

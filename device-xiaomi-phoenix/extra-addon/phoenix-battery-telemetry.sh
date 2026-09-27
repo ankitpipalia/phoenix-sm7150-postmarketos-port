@@ -32,13 +32,22 @@ boot_id=$(cat "$PROC_ROOT/sys/kernel/random/boot_id" 2>/dev/null || echo unknown
 
 mkdir -p "$LOG_DIR"
 
-read_attr() {
-    value=
+# attr FILE: set $v to the attribute's value using shell builtins only.
+# The previous `$(read_attr ...)` form forked a subshell, cat, printf and tr for
+# every field -- roughly 90 processes per sample -- which made this logger one
+# of the largest CPU consumers on an idle server.  sysfs attributes are single
+# lines; a value that fails to read (e.g. EAGAIN) is recorded as empty.
+attr() {
+    v=
     if [ -r "$1" ]; then
-        value=$(cat "$1" 2>/dev/null || true)
+        { IFS= read -r v || :; } < "$1" 2>/dev/null || v=
     fi
-    printf '%s' "$value" | tr '\t\r\n' '   '
+    case "$v" in
+        *"$TAB"*|*"$CR"*) v=$(printf '%s' "$v" | tr '\t\r' '  ') ;;
+    esac
 }
+TAB=$(printf '\t')
+CR=$(printf '\r')
 
 write_header() {
     printf 'epoch_s\tiso8601\tuptime_s\tboot_id\tvoltage_level_pct\tbattery_voltage_uv\tbattery_voltage_avg_uv\tbattery_voltage_ocv_uv\tbattery_current_ua\tbattery_current_avg_ua\tbattery_temp_decic\tcharger_online\tcharger_status\tcharger_health\tcharger_usb_type\tusb_input_voltage_uv\tusb_input_current_ua\tusb_input_current_limit_ua\ttcpm_online\ttcpm_voltage_uv\ttcpm_current_max_ua\ttcpm_usb_type\ttypec_power_role\n'
@@ -46,10 +55,14 @@ write_header() {
 
 last_day=
 sample_count=0
+expected_header=$(write_header)
 while :; do
-	day=$(date -u +%F)
+	# One fork for both epoch and UTC day; the ISO field keeps `date -Iseconds`.
+	set -- $(date -u '+%s %F')
+	epoch=$1
+	day=$2
+	iso=$(date -Iseconds)
 	base_log="$LOG_DIR/telemetry-$day.tsv"
-	expected_header=$(write_header)
 	log="$base_log"
 	version=1
 	# Never append across schemas and never truncate an existing log. Walk
@@ -75,7 +88,8 @@ while :; do
     # Prefer online TCPM source for deterministic telemetry
     for candidate in "$POWER_SUPPLY_ROOT"/tcpm-source-psy-*; do
         [ -d "$candidate" ] || continue
-        if [ "$(cat "$candidate/online" 2>/dev/null)" = "1" ]; then
+        attr "$candidate/online"
+        if [ "$v" = "1" ]; then
             tcpm=$candidate
             break
         fi
@@ -83,30 +97,19 @@ while :; do
         [ -z "$tcpm" ] && tcpm=$candidate
     done
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$(date +%s)" \
-        "$(date -Iseconds)" \
-        "$(cut -d' ' -f1 "$PROC_ROOT/uptime")" \
-        "$boot_id" \
-        "$(read_attr "$gauge/capacity")" \
-        "$(read_attr "$gauge/voltage_now")" \
-        "$(read_attr "$gauge/voltage_avg")" \
-        "$(read_attr "$gauge/voltage_ocv")" \
-        "$(read_attr "$gauge/current_now")" \
-        "$(read_attr "$gauge/current_avg")" \
-        "$(read_attr "$gauge/temp")" \
-        "$(read_attr "$charger/online")" \
-        "$(read_attr "$charger/status")" \
-        "$(read_attr "$charger/health")" \
-        "$(read_attr "$charger/usb_type")" \
-        "$(read_attr "$charger/voltage_now")" \
-        "$(read_attr "$charger/current_now")" \
-        "$(read_attr "$charger/current_max")" \
-        "$(read_attr "$tcpm/online")" \
-        "$(read_attr "$tcpm/voltage_now")" \
-        "$(read_attr "$tcpm/current_max")" \
-        "$(read_attr "$tcpm/usb_type")" \
-        "$(read_attr "$typec/power_role")" >> "$log"
+    up=
+    { read -r up _ || :; } < "$PROC_ROOT/uptime" 2>/dev/null || up=
+    row="$epoch	$iso	$up	$boot_id"
+    for f in "$gauge/capacity" "$gauge/voltage_now" "$gauge/voltage_avg" \
+        "$gauge/voltage_ocv" "$gauge/current_now" "$gauge/current_avg" \
+        "$gauge/temp" "$charger/online" "$charger/status" "$charger/health" \
+        "$charger/usb_type" "$charger/voltage_now" "$charger/current_now" \
+        "$charger/current_max" "$tcpm/online" "$tcpm/voltage_now" \
+        "$tcpm/current_max" "$tcpm/usb_type" "$typec/power_role"; do
+        attr "$f"
+        row="$row	$v"
+    done
+    printf '%s\n' "$row" >> "$log"
 
     sample_count=$((sample_count + 1))
     [ "$MAX_SAMPLES" -gt 0 ] && [ "$sample_count" -ge "$MAX_SAMPLES" ] && exit 0
