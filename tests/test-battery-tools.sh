@@ -586,6 +586,39 @@ case "$(run17 status)" in
 	*) fail "status did not report the missing kernel float control" ;;
 esac
 
+# ---- Float mode on SMB5: 10 mV quantisation and the above-ceiling verdict ----
+mkdir -p "$test_root/power19/pm8150b-charger" "$test_root/power19/qcom_qg" "$test_root/run19" "$test_root/proc19"
+printf 'auto\n' > "$test_root/power19/pm8150b-charger/charge_behaviour"
+printf '1\n' > "$test_root/power19/pm8150b-charger/online"
+printf '4091000\n' > "$test_root/power19/pm8150b-charger/constant_charge_voltage"
+printf '4180000\n' > "$test_root/power19/qcom_qg/voltage_avg"
+printf '4180000\n' > "$test_root/power19/qcom_qg/voltage_now"
+printf '%s\n' -140000 > "$test_root/power19/qcom_qg/current_avg"
+printf '5000.00 0.00\n' > "$test_root/proc19/uptime"
+run19() { FLOAT_CONTROL=1 POWER_SUPPLY_ROOT="$test_root/power19" RUN_DIR="$test_root/run19" PROC_ROOT="$test_root/proc19" "$cap_script" "$@"; }
+# A readback 9 mV under the target is one SMB5 step, not a foreign ceiling.
+run19
+[ "$(cat "$test_root/power19/pm8150b-charger/constant_charge_voltage")" = 4091000 ] ||
+	fail "float mode reprogrammed a ceiling within one 10 mV step"
+[ ! -e "$test_root/run19/phoenix-charge-cap.float-external" ] ||
+	fail "float mode treated a quantised readback as an external ceiling"
+# Above the ceiling the cell is meant to carry the system down to it.
+printf '4100000\n' > "$test_root/power19/pm8150b-charger/constant_charge_voltage"
+case "$(run19 status)" in
+	*"verdict:           ABOVE CEILING - running on battery down to 4.100 V"*) ;;
+	*) fail "status called the float-mode run-down a deficit" ;;
+esac
+# At the ceiling the same discharge is a real shortfall.
+printf '4105000\n' > "$test_root/power19/qcom_qg/voltage_avg"
+case "$(run19 status)" in
+	*"verdict:           DEFICIT"*) ;;
+	*) fail "status missed a deficit at the float ceiling" ;;
+esac
+# Inhibit mode never reports ABOVE CEILING.
+case "$(POWER_SUPPLY_ROOT="$test_root/power19" RUN_DIR="$test_root/run19" PROC_ROOT="$test_root/proc19" "$cap_script" status)" in
+	*"ABOVE CEILING"*) fail "inhibit-charge mode reported a float-mode verdict" ;;
+esac
+
 # ---- Telemetry golden row: the exact bytes a sample must produce ----
 # Makes the "builtins rewrite is byte-identical" claim checkable without git
 # history.  Covers the live oddities: empty APSD usb_type, bracketed selections,

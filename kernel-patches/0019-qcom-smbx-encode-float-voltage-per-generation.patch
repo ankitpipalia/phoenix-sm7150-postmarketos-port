@@ -1,0 +1,120 @@
+From: Ankit Pipalia <ankit@example.com>
+Date: Sun, 27 Sep 2026 17:00:00 +0530
+Subject: [PATCH 19/19] power: supply: qcom_smbx: encode float voltage per
+ generation
+
+FLOAT_VOLTAGE_CFG is not encoded the same way on both generations.  SMB2
+(PMI8998) counts from 3.4875 V in 7.5 mV steps; SMB5 (PM8150B, PM6150) counts
+from 3.6 V in 10 mV steps up to 4.79 V, which is the table the downstream
+qpnp-smb5 driver uses for both PMICs.  The driver only knows the SMB2 formula,
+so on SMB5 a 4.4 V voltage-max-design is written as selector 121 and the
+charger regulates towards 4.81 V, leaving nothing in the driver to hold the
+cell at its rating.
+
+Measured on a PM6150 (Xiaomi POCO X2) with the cell resting near 4.18 V:
+selector 60 kept charging at +140 to +160 mA, which a 3.94 V ceiling (SMB2
+encoding) could not allow but a 4.20 V one does; selector 50 (4.10 V) stopped
+charging altogether; selectors 57 and 58 (4.17 V and 4.18 V) straddled the
+resting voltage, the first reaching "Full" and holding at about 0 mA, the
+second still charging.
+
+Encode the ceiling per generation at probe and in the CONSTANT_CHARGE_VOLTAGE
+property, and clamp SMB5 requests to its 4.79 V maximum.
+
+Signed-off-by: Ankit Pipalia <ankit@example.com>
+---
+--- a/drivers/power/supply/qcom_smbx.c
++++ b/drivers/power/supply/qcom_smbx.c
+@@ -70,8 +70,11 @@
+ 
+ #define FLOAT_VOLTAGE_CFG				0x70
+ #define FLOAT_VOLTAGE_SETTING_MASK			GENMASK(7, 0)
+-#define FLOAT_VOLTAGE_BASE_UV				3487500
+-#define FLOAT_VOLTAGE_STEP_UV				7500
++#define SMB2_FLOAT_VOLTAGE_BASE_UV			3487500
++#define SMB2_FLOAT_VOLTAGE_STEP_UV			7500
++#define SMB5_FLOAT_VOLTAGE_BASE_UV			3600000
++#define SMB5_FLOAT_VOLTAGE_STEP_UV			10000
++#define SMB5_FLOAT_VOLTAGE_MAX_UV			4790000
+ 
+ #define SMB2_FG_UPDATE_CFG_2_SEL			0x7D
+ #define SMB2_SOC_LT_CHG_RECHARGE_THRESH_SEL_BIT		BIT(2)
+@@ -1009,6 +1012,33 @@
+ 	return 0;
+ }
+ 
++/*
++ * FLOAT_VOLTAGE_CFG counts from 3.4875 V in 7.5 mV steps on SMB2 but from
++ * 3.6 V in 10 mV steps (at most 4.79 V) on SMB5.  Encoding an SMB5 ceiling
++ * with the SMB2 formula programs a 4.4 V design maximum as 4.81 V.
++ */
++static int smb_float_voltage_base(struct smb_chip *chip)
++{
++	return chip->gen == SMB5 ? SMB5_FLOAT_VOLTAGE_BASE_UV :
++				   SMB2_FLOAT_VOLTAGE_BASE_UV;
++}
++
++static int smb_float_voltage_step(struct smb_chip *chip)
++{
++	return chip->gen == SMB5 ? SMB5_FLOAT_VOLTAGE_STEP_UV :
++				   SMB2_FLOAT_VOLTAGE_STEP_UV;
++}
++
++/* Rounds down, so the programmed ceiling never exceeds @uv. */
++static unsigned int smb_float_voltage_sel(struct smb_chip *chip, int uv)
++{
++	if (chip->gen == SMB5)
++		uv = min(uv, SMB5_FLOAT_VOLTAGE_MAX_UV);
++
++	return (uv - smb_float_voltage_base(chip)) /
++		smb_float_voltage_step(chip);
++}
++
+ static int smb_get_float_voltage(struct smb_chip *chip, int *val)
+ {
+ 	unsigned int stat;
+@@ -1018,8 +1048,9 @@
+ 	if (rc < 0)
+ 		return rc;
+ 
+-	*val = FLOAT_VOLTAGE_BASE_UV +
+-		(stat & FLOAT_VOLTAGE_SETTING_MASK) * FLOAT_VOLTAGE_STEP_UV;
++	*val = smb_float_voltage_base(chip) +
++		(stat & FLOAT_VOLTAGE_SETTING_MASK) *
++		smb_float_voltage_step(chip);
+ 	return 0;
+ }
+ 
+@@ -1036,16 +1067,17 @@
+ 	if (!chip->batt_info || chip->batt_info->voltage_max_design_uv <= 0)
+ 		return -ENODEV;
+ 
+-	if (uv < FLOAT_VOLTAGE_BASE_UV ||
++	if (uv < smb_float_voltage_base(chip) ||
+ 	    uv > chip->batt_info->voltage_max_design_uv)
+ 		return -EINVAL;
+ 
+-	sel = (uv - FLOAT_VOLTAGE_BASE_UV) / FLOAT_VOLTAGE_STEP_UV;
++	sel = smb_float_voltage_sel(chip, uv);
+ 	if (sel > FLOAT_VOLTAGE_SETTING_MASK)
+ 		return -EINVAL;
+ 
+ 	dev_info(chip->dev, "float voltage set to %u uV\n",
+-		 FLOAT_VOLTAGE_BASE_UV + sel * FLOAT_VOLTAGE_STEP_UV);
++		 smb_float_voltage_base(chip) +
++		 sel * smb_float_voltage_step(chip));
+ 
+ 	return regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
+ 				  FLOAT_VOLTAGE_SETTING_MASK, sel);
+@@ -1559,7 +1591,8 @@
+ 			return rc;
+ 	}
+ 
+-	rc = (chip->batt_info->voltage_max_design_uv - 3487500) / 7500;
++	rc = smb_float_voltage_sel(chip,
++				   chip->batt_info->voltage_max_design_uv);
+ 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
+ 				FLOAT_VOLTAGE_SETTING_MASK, rc);
+ 	if (rc < 0)
+-- 
+2.51.0

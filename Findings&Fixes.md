@@ -889,7 +889,7 @@ closed without changing the Type-C role.
 ### 18. Development convenience creates a large trust boundary
 
 The old live image installed general passwordless sudo/doas for the default
-user. After the r21 upgrade, device-provided `99-user-nopass.conf`/`90-user-nopass` are absent (`NOT_EXISTS`), but an unmanaged `/etc/sudoers.d/user-nopasswd` (`user ALL=(ALL:ALL) NOPASSWD: ALL`, `who-owns: no owner`, created by pmbootstrap user setup Jul 12) still grants passwordless `sudo`, while `doas` now requires auth (`permit persist keepenv :wheel` from `postmarketos-base-doas-61-r0` in `/etc/doas.d/10-postmarketos.conf`). `apk` confirms `device-xiaomi-phoenix-1-r21` with no device `doas`/`sudo` files. SSH still uses password `147147` on 22. The LAN-facing
+user. After the r21 upgrade, device-provided `99-user-nopass.conf`/`90-user-nopass` are absent (`NOT_EXISTS`), but an unmanaged `/etc/sudoers.d/user-nopasswd` (`user ALL=(ALL:ALL) NOPASSWD: ALL`, `who-owns: no owner`, created by pmbootstrap user setup Jul 12) still grants passwordless `sudo`, while `doas` now requires auth (`permit persist keepenv :wheel` from `postmarketos-base-doas-61-r0` in `/etc/doas.d/10-postmarketos.conf`). `apk` confirms `device-xiaomi-phoenix-1-r21` with no device `doas`/`sudo` files. SSH still accepts the account password on 22. The LAN-facing
 device also exposed:
 
 - SSH on 22
@@ -904,7 +904,7 @@ account plus `NOPASSWD` `sudo` is effectively root without a password.
 #### Fix — partial progress 2026-09-03 23:07, remaining steps
 
 1. Install an SSH key and disable password authentication after recovery access
-   is verified. **Live:** still password `147147`; `sshd -T` not yet checked. Keep a serial/USB console recovery path.
+   is verified. **Live:** still password authentication; `sshd -T` not yet checked. Keep a serial/USB console recovery path.
 2. Replace general passwordless privilege with narrowly scoped commands or
    require authentication. **Live r21:** device-provided passwordless removed (`NOT_EXISTS`); `doas` now `permit persist` (auth required). **Remaining:** remove or restrict unmanaged `/etc/sudoers.d/user-nopasswd` — e.g., delete for password-required sudo, or replace with `sudo-rs` timestamped auth and/or `Defaults targetpw` scope. Verify with `sudo -n true` fails and `sudo -l` after.
 3. Bind Kubernetes/kubelet endpoints only where needed and restrict them by
@@ -1680,8 +1680,9 @@ Practical consequences and options:
   events.
 - Patch 0018 (float ceiling) is expected to make the leak irrelevant: with the
   float voltage programmed to the target, the charger should not push the cell
-  above it whatever the pulses are. That is a prediction from the register
-  semantics, not a result; the patch has not been compiled or run on the phone.
+  above it whatever the pulses are. (Tested 2026-09-27: 0018 alone did push
+  the cell above a 4.095 V request, because the register was misencoded; with
+  0019 the charger holds the ceiling. See the finishing pass.)
 - The rerun loop should be bounded in the next kernel (e.g. stop rerunning
   after ~10 unresolved attempts once a valid TCPM fallback is applied, then fall
   through to the 15 s revalidation). Not written yet: it could not be
@@ -1742,25 +1743,154 @@ tools (float-external, opt-in float control, plausibility, golden telemetry
 row, adapter-test cleanup), sync, and console (25 tests, including the
 previously untested post-session edits and the concurrent-miss case) all pass.
 
+Status after the finishing pass the same day (next section): patch 0018 was
+compiled and tested on the phone and turned out to be encoded for the wrong
+PMIC generation, which patch 0019 fixes; r35 and then r36 are installed as
+packages; `API_TOKEN` is set; the work is committed. The console's per-PID
+signal check remains a usability guard, not the security boundary — the kernel
+refuses an unprivileged `kill()` of root processes regardless — and Portainer's
+admin is still effectively root on the phone through the podman socket.
+
+### Finishing pass: packages, API token, patch 0018 on hardware — 2026-09-27
+
+#### r35/r36 installed as packages
+
+`device-xiaomi-phoenix` r35 (and later r36, with the limiter changes below) was
+built with abuild in an Alpine edge container and installed with
+`apk add --allow-untrusted`: the phone trusts a local key,
+`pmos@local-6a9b7e81`, whose private half is not in this workspace. Before r35
+only three files on the phone differed from the package — two `/etc` configs
+and a systemd preset — because everything else had been hand-deployed. Each
+upgrade's mkinitfs trigger regenerated the initramfs and re-ran boot-deploy,
+and each time every file under `/boot` came out byte-identical to the backup
+taken first (`/var/backups/boot-pre-r35-20260927`). apk also pulled in
+`postmarketos-buffybox-iskey` through an `install_if`; it only adds a mkinitfs
+trigger marker. Edited configs were merged from the `.apk-new` copies. All
+Phoenix units kept their state; no unit failed.
+
+#### API token
+
+`API_TOKEN` is a random 43-character token in `/etc/phoenix-llm-manager.conf`,
+now mode 0600 (only systemd reads it). Every `/api/*` request needs it in
+`X-API-Key`; without it or with a wrong one the console answers 401, POSTs
+included, while the page itself and `/health` stay open. The browser asks for
+it once per tab on the Settings page. HTTP is still plain text on the LAN.
+
+#### Patch 0018 compiled — and wrong on this PMIC
+
+The kernel package was built from pmaports with patches 0001–0018 using
+Alpine's `clang22`/`lld22` 22.1.8, the toolchain recorded in the running
+kernel's `CONFIG_CC_VERSION_TEXT` (edge's default is now LLVM 23, and with CFI
+enabled a module from another compiler is a gamble): 16 m 45 s, no warnings,
+no errors. After normalising ThinLTO's `.llvm.<hash>` suffixes, all 64,156
+text symbols of the new kernel sit at the same addresses as in the running
+one; the differences are data (embedded config, version strings). The charger
+driver is a module nothing depends on and the kernel has neither module
+signing nor MODVERSIONS, so the patched `qcom_smbx.ko` (same vermagic) was
+swapped into the running kernel instead of rebooting, with
+`kernel.panic_on_oops=1` on top of the existing `kernel.panic=120`.
+
+It loaded cleanly and exposed a writable `constant_charge_voltage`. At 11:00
+UTC the limiter programmed 4.095 V (register `0x1070` = `0x51`), and the
+charger kept charging: +181 mA two seconds later, +240 to +258 mA a minute
+later, the cell at 4.26 V under current, input up to 1.29 A. Re-arming charging
+changed nothing. The prediction that a lowered float would hold the cell
+failed as written. Writing selectors directly showed why; the cell was resting
+near 4.18 V:
+
+| selector | SMB2 reading (what the driver assumes) | SMB5 reading | observed |
+| ---: | ---: | ---: | --- |
+| 50 (`0x32`) | 3.8625 V | 4.10 V | no charging; the cell carries the system at −92 to −178 mA, input ~5 mA |
+| 57 (`0x39`) | 3.9150 V | 4.17 V | brief top-ups, then `Full` at about 0 mA |
+| 58 (`0x3a`) | 3.9225 V | 4.18 V | charging at +75 to +83 mA |
+| 60 (`0x3c`) | 3.9375 V | 4.20 V | charging at +138 to +163 mA |
+| 81 (`0x51`) | 4.0950 V | 4.41 V | charging at +181 to +258 mA |
+| 121 (`0x79`, written at every probe) | 4.3950 V | **4.81 V** | — |
+
+Charging at selector 60 is impossible under the SMB2 reading (3.94 V against a
+4.18 V cell) and expected under SMB5's. Qualcomm's downstream driver settles
+the encoding: `qpnp-smb5.c` in LineageOS `android_kernel_xiaomi_sm6150` gives
+PM6150 the `smb5_pm8150b_params` table, whose float voltage is 3.6 V + 10 mV
+per step, at most 4.79 V. Upstream `qcom_smbx` knows only the SMB2 formula
+(3.4875 V + 7.5 mV), so on this PMIC it has been programming the 4.40 V design
+maximum as **4.81 V at every boot**. Nothing in the driver held the cell at its
+rating; on this kernel the limiter's inhibit did. Whether the cell was ever
+charged past 4.40 V before the limiter ran is unknown: the retained telemetry
+(Sep 12–27) peaks at a 4.201 V average before this test and 4.252 V during it.
+
+Two earlier statements in this document were wrong for the same reason, and
+are annotated where they appear: the 2026-09-06 register read that "confirmed"
+0018's encoding only matched the driver's own formula, and the "interim
+expectation" of a cell resting near 4.4 V after a deficit release was really a
+4.81 V ceiling.
+
+#### Patch 0019: encode the float voltage per generation
+
+`0019-qcom-smbx-encode-float-voltage-per-generation.patch` encodes the ceiling
+per generation at probe and in 0018's property and clamps SMB5 to 4.79 V.
+Swapped in live at 11:16: probe writes `0x50` (4.40 V); 4.10, 4.17, 4.18, 4.20
+and 4.40 V map to `0x32`, `0x39`, `0x3a`, `0x3c`, `0x50` and read back exactly;
+4.5 V, 3.5 V and −1 are rejected; no oops or CFI report.
+
+#### What float mode actually does
+
+- **Above the ceiling** the charger does not merely stop charging: input drops
+  to about 5 mA and the cell carries the whole system down to the ceiling.
+  That is the laptop behaviour asked for — run on battery down to the limit —
+  not the "rest at the ceiling" predicted earlier.
+- **At the ceiling** (held at 4.17 V, the cell's own voltage, for five minutes
+  from 11:18): the adapter carried the system, 1.65 W idle and 2.91 W with one
+  core busy, while the cell took small top-ups, +22 mA mean idle and +21 mA
+  under load. Status toggled between `Full` and `Charging` about half the time
+  each, consistent with the charge-termination workaround downstream enables
+  for PM6150. Charging stays enabled, so a shortfall under load is made up
+  afterwards rather than accumulating as it can with an inhibit.
+- `phoenix-charge-cap status` now reports `ABOVE CEILING` instead of `DEFICIT`
+  during that run-down, and a readback within one 10 mV SMB5 step counts as
+  already programmed (it was 7.5 mV). Both are covered by tests, which fail on
+  the previous script. These changes are r36.
+
+Float mode is enabled on this phone (`FLOAT_CONTROL=1`, ceiling 4.10 V) since
+11:24 UTC. At 11:47 the cell was at 4.138 V and running the system at about
+−57 mA on its way down. Holding at 4.10 V is expected, as it held at 4.17 V,
+but that hold has not been observed yet; the package default stays 0 until it
+has been watched over hours. Telemetry records it.
+
+#### Making it survive a reboot
+
+The kernel package was rebuilt with 0019 as
+`linux-postmarketos-qcom-sm7150-7.1_rc3-r1`: no warnings, no errors, every
+file of the installed r0 package present under the same name, plus the
+`nft_fib_inet`/`nft_redir` modules podman needs and four depmod index files;
+the phoenix DTB is byte-identical and no text symbol moved. Its charger module
+is installed as `/lib/modules/7.1.0-rc3-sm7150/updates/qcom_smbx.ko.zst`,
+which `modprobe` now resolves first, and was loaded from there — so every boot
+programs 4.40 V and float mode resumes. That file is the one hand-installed
+piece left, and it shadows the packaged module until removed.
+
+The package itself is not installed. Installing it replaces `/boot/vmlinuz`,
+and a kernel that fails to boot cannot be recovered remotely here: systemd-boot
+boot counting cannot rename entries through U-Boot, efivarfs is read-only, and
+the U-Boot framebuffer is blank on phoenix. It should go in with someone at
+the phone for the reboot, removing the `updates/` file at the same time. The
+package is on the phone at `/var/cache/phoenix/` and in the workspace at
+`~/Git/artifacts/phoenix-packages/` (SHA-256 `38d1a886…42dea6`).
+
+Building it exposed a trap: `postmarketos-installkernel` now installs
+`/usr/sbin/installkernel`, but the kernel's `scripts/install.sh` looks only in
+`$HOME/bin` and `/sbin`. Where `/sbin` is a separate directory, `make zinstall`
+silently falls back and ships `/boot/vmlinuz-7.1.0-rc3-sm7150` instead of
+`/boot/vmlinuz` — the first build did exactly that, and boot-deploy would not
+have used it. The container now links `/sbin/installkernel`.
+
 Still open:
 
-- **Patch 0018 has never been compiled.** It applies cleanly to the 7.1_rc3
-  tree, but no configured tree or builder was available in either session.
-  What this document says float capping will do (hold the cell at the target,
-  make the leak irrelevant, need less headroom than the inhibit) is a
-  prediction from the register semantics until it runs on the phone, which is
-  why the limiter now uses it only with `FLOAT_CONTROL=1`.
-- **Device drift.** The installed package is still `device-xiaomi-phoenix-1-r27`;
-  everything since has been installed by hand over it (backups under
-  `/var/backups/phoenix-*`). `apk fix` would revert those files. The durable
-  path is building r35 and installing it. The hand-deployed files do match the
-  local r35 sources by SHA-512 (verified independently in both audits, and
-  again after each follow-up deploy).
-- **Uncommitted.** The r35 work is local only; `origin/main` is still `f73d957`.
-- The console's per-PID signal check is a usability guard, not the security
-  boundary — the kernel refuses an unprivileged `kill()` of root processes
-  regardless. The real exposures remain the empty `API_TOKEN` and Portainer,
-  whose admin is effectively root on the phone through the podman socket.
+- Watch the hold at 4.10 V in telemetry; then consider `FLOAT_CONTROL=1` as
+  the package default.
+- Install the r1 kernel package with a watched reboot and remove the
+  `updates/` module.
+- Report the SMB5 float encoding upstream: it affects every SMB5 user of
+  `qcom_smbx`, not only phoenix.
 
 ## Production-safety validation matrix
 
@@ -1823,7 +1953,9 @@ float voltage leaves `CHARGING_ENABLE_CMD_BIT` set, so the charger is expected
 to keep regulating, with the cell resting at the ceiling and taper current near
 zero. `phoenix-charge-cap.sh` was written to prefer this mode automatically;
 since 2026-09-27 it is opt-in (`FLOAT_CONTROL=1`) until that expectation has
-been checked on the phone. Patch 0018 applies cleanly
+been checked on the phone. (Checked the same day: with 0018 alone the charger
+ignored the ceiling because the register was misencoded; with 0019 it holds
+it. See the finishing pass.) Patch 0018 applies cleanly
 to the 7.1_rc3 tree with patches 0001-0017 applied; it is **not yet compiled or
 hardware-tested**. The userspace policy is lower-only too: if firmware or
 another controller already selected a ceiling below its target, it preserves
@@ -1871,7 +2003,9 @@ The float register was also read directly to confirm patch 0018's encoding:
 = 3487500 + 121 x 7500 = 4,395,000 uV, matching the value the driver programs at
 probe from `voltage-max-design`. `REGMAP_ALLOW_WRITE_DEBUGFS` is not enabled, so
 the float ceiling cannot be lowered for a live experiment without building the
-kernel; patch 0018 remains compile-and-flash work.
+kernel; patch 0018 remains compile-and-flash work. (Correction, 2026-09-27:
+this only matched the driver's own formula. PM6150 reads `0x79` with the SMB5
+encoding, 3.6 V + 10 mV per step, as 4.81 V; see the finishing pass.)
 
 #### Cable comparison isolates the real variable — 2026-09-06 15:00 UTC
 
@@ -1944,7 +2078,8 @@ float capping keeps the charger regulating instead of handing the rail back to
 the cell. Nothing has measured that. In particular, the upstream driver clears
 `I_TERM_BIT` in `CHGR_CFG2`, which its own comment reads as leaving current
 termination enabled, and whether a terminated charger behaves like an inhibited
-one under load is unknown.
+one under load is unknown. (Measured 2026-09-27 with 0019: at the ceiling the
+adapter carried one busy core while the cell still gained +21 mA on average.)
 
 #### Power-path verification matrix — 2026-09-06 15:30 UTC
 
@@ -1990,7 +2125,8 @@ cable 1, `auto` still charged at +35 mA where the inhibit drained −35 mA. Unde
 load no control mode substitutes for a good path; cable 1 drained the cell in
 `auto` too (−147 mA). The inhibit path works while the cable stays good, and the
 adapter-deficit guard remains valuable precisely because it catches the cable-1
-case automatically.
+case automatically. (2026-09-27: float mode measured with 0019 — see the
+finishing pass.)
 
 Both CPU policies were also moved from `performance` to `schedutil` for the
 measurement, which cut system load from 0.739 W to 0.568 W but did not by itself
@@ -2003,7 +2139,9 @@ the limiter will keep the charger in `auto`, so the cell will rest near the
 device tree float of about 4.4 V rather than at the intended 4.10 V ceiling.
 That is a deliberate trade -- a high resting voltage ages the cell, but draining
 it to the shutdown guard is worse -- and it is what patch 0018 is intended to
-remove.
+remove. (Correction, 2026-09-27: on this PMIC the probe-time float is 4.81 V,
+not 4.4 V, so an uninterrupted `auto` window aims above the cell's rating;
+patch 0019 fixes the encoding.)
 
 | Test | Required result |
 | --- | --- |

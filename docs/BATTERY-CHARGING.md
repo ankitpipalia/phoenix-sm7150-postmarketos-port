@@ -30,7 +30,10 @@ ordering/log and revalidation; 0012: explicit 5-12 V PD acceptance with 1.5 A
 and 15 W caps; 0013: corrected SMB5 override offset and AICL rerun; 0015:
 trusted DCP/CDP override; 0016: continuous 5-12 V adapter allowance; 0017:
 bounded retry after a transient offline status). Patch 0014 is the separate
-Phoenix PS_HOLD reboot fix.
+Phoenix PS_HOLD reboot fix. Patch 0018 makes the float voltage writable as
+`constant_charge_voltage`, and 0019 encodes it for SMB5 (3.6 V + 10 mV per
+step) instead of SMB2 (3.4875 V + 7.5 mV), which upstream uses for both; the
+0011 off-by-one fix was correct only for SMB2.
 
 Normal BC1.2 APSD results remain authoritative for CDP and DCP. The driver keeps
 the 500 mA safe default unless all relevant fallback checks pass:
@@ -186,35 +189,48 @@ input is online releases the owned inhibit, arms a `DEFICIT_LOCKOUT_SECONDS`
 lockout, and logs at warning level. A missing or unreadable current channel
 proves nothing and never releases an inhibit.
 
+On a kernel without patch 0019 the charger's own ceiling is 4.81 V (see the
+float section), so in this mode the limiter's inhibit is the only thing
+holding the cell under its 4.40 V rating.
+
 Since the 2026-09-15 power outage the dock has held a 5 V / 2 A PD contract that
 APSD never classifies, and the inhibited cell's daily-mean voltage has crept up
 by about 12 mV over ten days. `Findings&Fixes.md` records what is and is not
 established about that regime.
 
-### Float-voltage mode (opt-in, kernel patch 0018)
+### Float-voltage mode (opt-in, kernel patches 0018 and 0019)
 
 Used only when `FLOAT_CONTROL=1` in `/etc/phoenix-charge-cap.conf` and
 `pm8150b-charger/constant_charge_voltage` is writable. The limiter programs
 `STOP_VOLTAGE_UV` as the charger's float ceiling and leaves
-`charge_behaviour=auto`. The intent is that, with `CHARGING_ENABLE_CMD_BIT`
-still set, the charger keeps regulating: the adapter carries the system, the
-cell charges to the ceiling and rests there with taper current near zero, and
-the PMIC's own recharge threshold replaces the limiter's hysteresis
-(`START_VOLTAGE_UV` is unused in this mode).
+`charge_behaviour=auto`; `START_VOLTAGE_UV` is unused in this mode.
 
-**None of that has been observed.** Patch 0018 has never been compiled or run
-on the phone, and this mode has no deficit guard, which is why it is opt-in.
-Enable it for a watched test, check `phoenix-charge-cap status` and the battery
-current under idle and load, and only then leave it unattended. To go back, set
-`FLOAT_CONTROL=0` and start `phoenix-charge-cap-reset.service`.
+Measured on the phone on 2026-09-27 with both patches:
 
-The register quantises to 7.5 mV from a 3.4875 V base and the driver truncates,
-so the readback sits at or just below the request; the limiter treats anything
-within one step as already programmed and does not rewrite it. `reset` restores
-the ceiling that was in place before the limiter lowered it, whatever
-`FLOAT_CONTROL` says. If firmware or another controller has already selected a
-lower ceiling, the limiter leaves it unchanged and does not claim ownership; it
-never raises an existing limit.
+- **Above the ceiling** input drops to about 5 mA and the cell carries the
+  system down to the ceiling (−92 to −178 mA). `phoenix-charge-cap status`
+  reports this as `ABOVE CEILING`, not `DEFICIT`.
+- **At the ceiling** the adapter carries the system — 1.65 W idle, 2.91 W with
+  one core busy — and the cell takes small top-ups, about +20 mA mean, while
+  the charger's status alternates between `Full` and `Charging`.
+- The hold was watched for five minutes at 4.17 V. A hold of hours at 4.10 V
+  has not been observed yet, so the package default stays `FLOAT_CONTROL=0`;
+  the test phone runs with 1.
+
+Patch 0019 is required, not optional. PM6150's float register counts from
+3.6 V in 10 mV steps (the SMB5 encoding), while the upstream driver — and
+patch 0018 on its own — use the SMB2 encoding, 3.4875 V + 7.5 mV. Without 0019
+a 4.10 V request programs 4.41 V, and the 4.40 V design maximum written at
+every probe becomes 4.81 V.
+
+The register quantises to 10 mV on SMB5 and the driver truncates, so the
+readback sits at or just below the request; the limiter treats anything within
+one 10 mV step as already programmed. `reset` restores the ceiling that was in
+place before the limiter lowered it, whatever `FLOAT_CONTROL` says. If firmware
+or another controller has already selected a lower ceiling, the limiter leaves
+it unchanged and does not claim ownership; it never raises an existing limit.
+To return to inhibit mode, set `FLOAT_CONTROL=0` and start
+`phoenix-charge-cap-reset.service`.
 
 ### Sensor plausibility
 

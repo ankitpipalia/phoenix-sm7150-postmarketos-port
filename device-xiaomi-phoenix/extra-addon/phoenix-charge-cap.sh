@@ -25,10 +25,9 @@ DEFICIT_CURRENT_UA=${DEFICIT_CURRENT_UA:-20000}
 DEFICIT_SAMPLES=${DEFICIT_SAMPLES:-5}
 DEFICIT_LOCKOUT_SECONDS=${DEFICIT_LOCKOUT_SECONDS:-1800}
 PROC_ROOT=${PROC_ROOT:-/proc}
-# Float-voltage control needs kernel patch 0018, which has never run on this
-# hardware, and the mode has no deficit guard, so it is opt-in: until
-# FLOAT_CONTROL=1 the limiter uses inhibit-charge even on a kernel exposing
-# constant_charge_voltage.
+# Float-voltage control needs kernel patches 0018 and 0019 and has been
+# watched only briefly on hardware, so it is opt-in: until FLOAT_CONTROL=1 the
+# limiter uses inhibit-charge even on a kernel exposing constant_charge_voltage.
 FLOAT_CONTROL=${FLOAT_CONTROL:-0}
 
 [ -r /etc/phoenix-charge-cap.conf ] && . /etc/phoenix-charge-cap.conf
@@ -113,9 +112,9 @@ behaviour="$charger/charge_behaviour"
 state="$RUN_DIR/phoenix-charge-cap.inhibited"
 deficit="$RUN_DIR/phoenix-charge-cap.deficit"
 lockout="$RUN_DIR/phoenix-charge-cap.lockout"
-# Float-voltage control (kernel patch 0018, opt-in).  The intent is that the
-# charger keeps regulating, so the adapter carries the system and the cell rests
-# at the programmed ceiling instead of cycling against it -- not yet observed.
+# Float-voltage control (kernel patches 0018 + 0019, opt-in).  Measured on this
+# hardware: above the ceiling the cell carries the system down to it; at the
+# ceiling the adapter carries the system and the cell gets small top-ups.
 float_attr="$charger/constant_charge_voltage"
 float_state="$RUN_DIR/phoenix-charge-cap.float-original"
 float_external="$RUN_DIR/phoenix-charge-cap.float-external"
@@ -173,7 +172,15 @@ if [ "${1:-}" = "status" ]; then
 			$((_vbat / 1000000)) $((_vbat % 1000000 / 1000)) $((_ibat / 1000))
 		if [ "$_online" = "1" ] && [ "$_ibat" -lt 0 ] &&
 		   [ $((0 - _ibat)) -ge "$DEFICIT_CURRENT_UA" ]; then
-			printf 'verdict:           DEFICIT - adapter is not carrying the system load\n'
+			# Above a float ceiling the charger hands the rail to the cell until
+			# it falls to the ceiling; that discharge is the policy working.
+			if [ "$_mode" = 'float voltage' ] && valid_uint "$_float" &&
+			   [ "$_vbat" -gt $((_float + 10000)) ]; then
+				printf 'verdict:           ABOVE CEILING - running on battery down to %s.%03d V\n' \
+					$((_float / 1000000)) $((_float % 1000000 / 1000))
+			else
+				printf 'verdict:           DEFICIT - adapter is not carrying the system load\n'
+			fi
 		elif [ "$_online" = "1" ]; then
 			printf 'verdict:           OK - system is running on the adapter\n'
 		else
@@ -256,10 +263,10 @@ if [ "$START_VOLTAGE_UV" -lt 3400000 ] || [ "$STOP_VOLTAGE_UV" -gt 4400000 ]; th
 fi
 
 # ---- Float mode (opt-in): cap the float voltage, leave charging enabled ----
-# Intended: the cell rests at the ceiling with taper current near zero, the
-# charger keeps regulating, and the adapter carries the system, so the limiter
-# needs no hysteresis of its own -- START_VOLTAGE_UV is unused here and the
-# recharge threshold is the PMIC's own.  Untested on hardware (patch 0018).
+# The charger enforces the ceiling itself, so the limiter needs no hysteresis
+# of its own -- START_VOLTAGE_UV is unused here.  Needs patch 0019 as well as
+# 0018: without it the SMB5 register is encoded as SMB2 and 4.10 V becomes
+# 4.41 V.
 if [ "$use_float" -eq 1 ]; then
 	if [ -e "$state" ]; then
 		# Float control supersedes a legacy inhibit we own; drop it so the
@@ -277,10 +284,11 @@ if [ "$use_float" -eq 1 ]; then
 		exit 1
 	fi
 
-	# The register quantises to 7.5 mV and the driver truncates, so a readback
-	# is "already correct" anywhere inside one step below the request.
+	# The register quantises to 7.5 mV (SMB2) or 10 mV (SMB5, this PMIC) and
+	# the driver truncates, so a readback is "already correct" anywhere inside
+	# one 10 mV step below the request.
 	if [ "$current_float" -le "$STOP_VOLTAGE_UV" ] &&
-	   [ "$current_float" -gt $((STOP_VOLTAGE_UV - 7500)) ]; then
+	   [ "$current_float" -gt $((STOP_VOLTAGE_UV - 10000)) ]; then
 		exit 0
 	fi
 
