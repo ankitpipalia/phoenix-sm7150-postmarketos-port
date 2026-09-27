@@ -546,9 +546,7 @@ run16; run16
 run16 reset
 [ ! -e "$test_root/run16/phoenix-charge-cap.float-external" ] || fail "reset left the float-external marker"
 
-# ---- Float control is opt-in: a writable ceiling alone must not switch modes ----
-# Patch 0018 has never run on hardware, so installing a kernel that carries it
-# must leave the validated inhibit-charge path in charge until FLOAT_CONTROL=1.
+# ---- FLOAT_CONTROL=0 keeps inhibit-charge even when the kernel can cap the float ----
 mkdir -p "$test_root/power17/pm8150b-charger" "$test_root/power17/qcom_qg" "$test_root/run17" "$test_root/proc17"
 printf 'auto\n' > "$test_root/power17/pm8150b-charger/charge_behaviour"
 printf '1\n' > "$test_root/power17/pm8150b-charger/online"
@@ -556,24 +554,24 @@ printf '4400000\n' > "$test_root/power17/pm8150b-charger/constant_charge_voltage
 printf '4150000\n' > "$test_root/power17/qcom_qg/voltage_avg"
 printf '4150000\n' > "$test_root/power17/qcom_qg/voltage_now"
 printf '5000.00 0.00\n' > "$test_root/proc17/uptime"
-run17() { POWER_SUPPLY_ROOT="$test_root/power17" RUN_DIR="$test_root/run17" PROC_ROOT="$test_root/proc17" "$cap_script" "$@"; }
-run17_float() { FLOAT_CONTROL=1 POWER_SUPPLY_ROOT="$test_root/power17" RUN_DIR="$test_root/run17" PROC_ROOT="$test_root/proc17" "$cap_script" "$@"; }
+run17() { FLOAT_CONTROL=0 POWER_SUPPLY_ROOT="$test_root/power17" RUN_DIR="$test_root/run17" PROC_ROOT="$test_root/proc17" "$cap_script" "$@"; }
+run17_default() { POWER_SUPPLY_ROOT="$test_root/power17" RUN_DIR="$test_root/run17" PROC_ROOT="$test_root/proc17" "$cap_script" "$@"; }
 run17
 [ "$(cat "$test_root/power17/pm8150b-charger/constant_charge_voltage")" = 4400000 ] ||
-	fail "float ceiling changed without FLOAT_CONTROL=1"
+	fail "float ceiling changed with FLOAT_CONTROL=0"
 [ "$(cat "$test_root/power17/pm8150b-charger/charge_behaviour")" = inhibit-charge ] ||
-	fail "limiter did not use inhibit-charge with float control off"
+	fail "FLOAT_CONTROL=0 did not use inhibit-charge"
 case "$(run17 status)" in
 	*"control mode:      inhibit-charge (float available, FLOAT_CONTROL=0)"*) ;;
 	*) fail "status did not report float control as available but off" ;;
 esac
-# Opting in takes over from the owned inhibit ...
-run17_float
+# The default uses float control and takes over from the owned inhibit ...
+run17_default
 [ "$(cat "$test_root/power17/pm8150b-charger/constant_charge_voltage")" = 4100000 ] ||
-	fail "FLOAT_CONTROL=1 did not program the ceiling"
+	fail "the default did not program the float ceiling"
 [ "$(cat "$test_root/power17/pm8150b-charger/charge_behaviour")" = auto ] ||
-	fail "FLOAT_CONTROL=1 left the owned inhibit in place"
-# ... and after opting out again, reset still restores the ceiling we lowered.
+	fail "float control left the owned inhibit in place"
+# ... and after switching to FLOAT_CONTROL=0, reset still restores the ceiling we lowered.
 run17 reset
 [ "$(cat "$test_root/power17/pm8150b-charger/constant_charge_voltage")" = 4400000 ] ||
 	fail "reset with float control off did not restore the lowered ceiling"
@@ -581,7 +579,7 @@ run17 reset
 	fail "reset with float control off left the float-original marker"
 # Without the float attribute, status names the reason for inhibit-charge.
 rm "$test_root/power17/pm8150b-charger/constant_charge_voltage"
-case "$(run17 status)" in
+case "$(run17_default status)" in
 	*"control mode:      inhibit-charge (no float control in kernel)"*) ;;
 	*) fail "status did not report the missing kernel float control" ;;
 esac

@@ -25,10 +25,9 @@ DEFICIT_CURRENT_UA=${DEFICIT_CURRENT_UA:-20000}
 DEFICIT_SAMPLES=${DEFICIT_SAMPLES:-5}
 DEFICIT_LOCKOUT_SECONDS=${DEFICIT_LOCKOUT_SECONDS:-1800}
 PROC_ROOT=${PROC_ROOT:-/proc}
-# Float-voltage control needs kernel patches 0018 and 0019 and has been
-# watched only briefly on hardware, so it is opt-in: until FLOAT_CONTROL=1 the
-# limiter uses inhibit-charge even on a kernel exposing constant_charge_voltage.
-FLOAT_CONTROL=${FLOAT_CONTROL:-0}
+# Float-voltage control (kernel patches 0018 and 0019) is used whenever the
+# kernel exposes constant_charge_voltage; FLOAT_CONTROL=0 forces inhibit-charge.
+FLOAT_CONTROL=${FLOAT_CONTROL:-1}
 
 [ -r /etc/phoenix-charge-cap.conf ] && . /etc/phoenix-charge-cap.conf
 [ -r /etc/default/phoenix-charge-cap ] && . /etc/default/phoenix-charge-cap
@@ -112,9 +111,9 @@ behaviour="$charger/charge_behaviour"
 state="$RUN_DIR/phoenix-charge-cap.inhibited"
 deficit="$RUN_DIR/phoenix-charge-cap.deficit"
 lockout="$RUN_DIR/phoenix-charge-cap.lockout"
-# Float-voltage control (kernel patches 0018 + 0019, opt-in).  Measured on this
+# Float-voltage control (kernel patches 0018 + 0019).  Measured on this
 # hardware: above the ceiling the cell carries the system down to it; at the
-# ceiling the adapter carries the system and the cell gets small top-ups.
+# ceiling the adapter carries the system and the cell sits within about 1 mA.
 float_attr="$charger/constant_charge_voltage"
 float_state="$RUN_DIR/phoenix-charge-cap.float-original"
 float_external="$RUN_DIR/phoenix-charge-cap.float-external"
@@ -262,7 +261,7 @@ if [ "$START_VOLTAGE_UV" -lt 3400000 ] || [ "$STOP_VOLTAGE_UV" -gt 4400000 ]; th
 	exit 1
 fi
 
-# ---- Float mode (opt-in): cap the float voltage, leave charging enabled ----
+# ---- Float mode: cap the float voltage, leave charging enabled -------------
 # The charger enforces the ceiling itself, so the limiter needs no hysteresis
 # of its own -- START_VOLTAGE_UV is unused here.  Needs patch 0019 as well as
 # 0018: without it the SMB5 register is encoded as SMB2 and 4.10 V becomes

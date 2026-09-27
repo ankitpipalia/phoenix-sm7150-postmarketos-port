@@ -166,11 +166,11 @@ or full capacity; that still requires a controlled charge/discharge experiment.
 
 The goal is laptop-style operation: run the phone from the adapter and keep the
 cell off its maximum resting voltage, so the battery serves as a UPS instead of
-a cycling energy store. `phoenix-charge-cap.sh` has two control modes:
-`inhibit-charge` by default, and float voltage as an opt-in for kernels that
-carry patch 0018.
+a cycling energy store. `phoenix-charge-cap.sh` has two control modes: float
+voltage whenever the kernel carries patches 0018 and 0019, and `inhibit-charge`
+otherwise or with `FLOAT_CONTROL=0`.
 
-### inhibit-charge mode (default, kernel patch 0010)
+### inhibit-charge mode (fallback, kernel patch 0010)
 
 It applies voltage hysteresis at `START_VOLTAGE_UV`/`STOP_VOLTAGE_UV` by writing
 `auto` or `inhibit-charge`, and verifies both that inhibition sticks and that
@@ -198,10 +198,10 @@ APSD never classifies, and the inhibited cell's daily-mean voltage has crept up
 by about 12 mV over ten days. `Findings&Fixes.md` records what is and is not
 established about that regime.
 
-### Float-voltage mode (opt-in, kernel patches 0018 and 0019)
+### Float-voltage mode (default, kernel patches 0018 and 0019)
 
-Used only when `FLOAT_CONTROL=1` in `/etc/phoenix-charge-cap.conf` and
-`pm8150b-charger/constant_charge_voltage` is writable. The limiter programs
+Used whenever `pm8150b-charger/constant_charge_voltage` is writable, unless
+`/etc/phoenix-charge-cap.conf` sets `FLOAT_CONTROL=0`. The limiter programs
 `STOP_VOLTAGE_UV` as the charger's float ceiling and leaves
 `charge_behaviour=auto`; `START_VOLTAGE_UV` is unused in this mode.
 
@@ -210,12 +210,12 @@ Measured on the phone on 2026-09-27 with both patches:
 - **Above the ceiling** input drops to about 5 mA and the cell carries the
   system down to the ceiling (−92 to −178 mA). `phoenix-charge-cap status`
   reports this as `ABOVE CEILING`, not `DEFICIT`.
-- **At the ceiling** the adapter carries the system — 1.65 W idle, 2.91 W with
-  one core busy — and the cell takes small top-ups, about +20 mA mean, while
-  the charger's status alternates between `Full` and `Charging`.
-- The hold was watched for five minutes at 4.17 V. A hold of hours at 4.10 V
-  has not been observed yet, so the package default stays `FLOAT_CONTROL=0`;
-  the test phone runs with 1.
+- **At the ceiling** the adapter carries the system. Held at 4.10 V after
+  running down from above, the cell sat at 4.12 V (gauge) within about 1 mA
+  for 4.5 hours while the adapter supplied about 0.41 A. A short test that
+  started at the cell's own voltage instead saw small top-ups (about +20 mA
+  mean, one core busy included) with the status alternating between `Full`
+  and `Charging`.
 
 Patch 0019 is required, not optional. PM6150's float register counts from
 3.6 V in 10 mV steps (the SMB5 encoding), while the upstream driver — and
@@ -229,7 +229,7 @@ one 10 mV step as already programmed. `reset` restores the ceiling that was in
 place before the limiter lowered it, whatever `FLOAT_CONTROL` says. If firmware
 or another controller has already selected a lower ceiling, the limiter leaves
 it unchanged and does not claim ownership; it never raises an existing limit.
-To return to inhibit mode, set `FLOAT_CONTROL=0` and start
+To use inhibit mode instead, set `FLOAT_CONTROL=0` and start
 `phoenix-charge-cap-reset.service`.
 
 ### Sensor plausibility

@@ -1852,9 +1852,7 @@ and 4.40 V map to `0x32`, `0x39`, `0x3a`, `0x3c`, `0x50` and read back exactly;
 
 Float mode is enabled on this phone (`FLOAT_CONTROL=1`, ceiling 4.10 V) since
 11:24 UTC. At 11:47 the cell was at 4.138 V and running the system at about
-−57 mA on its way down. Holding at 4.10 V is expected, as it held at 4.17 V,
-but that hold has not been observed yet; the package default stays 0 until it
-has been watched over hours. Telemetry records it.
+−57 mA on its way down; the hold that followed is below.
 
 #### Making it survive a reboot
 
@@ -1868,7 +1866,8 @@ which `modprobe` now resolves first, and was loaded from there — so every boot
 programs 4.40 V and float mode resumes. That file is the one hand-installed
 piece left, and it shadows the packaged module until removed.
 
-The package itself is not installed. Installing it replaces `/boot/vmlinuz`,
+The package itself was held back at first (it was installed with a watched
+reboot later the same day, below). Installing it replaces `/boot/vmlinuz`,
 and a kernel that fails to boot cannot be recovered remotely here: systemd-boot
 boot counting cannot rename entries through U-Boot, efivarfs is read-only, and
 the U-Boot framebuffer is blank on phoenix. It should go in with someone at
@@ -1883,12 +1882,64 @@ silently falls back and ships `/boot/vmlinuz-7.1.0-rc3-sm7150` instead of
 `/boot/vmlinuz` — the first build did exactly that, and boot-deploy would not
 have used it. The container now links `/sbin/installkernel`.
 
+#### Kernel r1 installed with a watched reboot — 17:50–17:57 UTC
+
+With someone at the phone, the r1 package was installed from
+`/var/cache/phoenix/`. Before that, `/boot` was backed up again
+(`/var/backups/boot-pre-kernel-r1-20260927`) and a rescue image was built for
+`fastboot boot`: the running kernel's raw Image, gzip-compressed with the
+phoenix DTB appended (which carries the `qcom,msm-id` 365 / `qcom,board-id`
+0x2b that ABL matches), the known-good initramfs and the pmOS root arguments,
+in the header-v0 layout of the U-Boot image ABL already boots (page 4096,
+kernel at 0x8000, ramdisk at 0x1000000, tags at 0x100). It is
+`~/Git/artifacts/phoenix-packages/phoenix-rescue-r0.img` and was not needed,
+so it remains untested.
+
+After the install, the `updates/` module was removed and `depmod` re-run, so
+the packaged driver is the one that loads. Checked before rebooting:
+`/boot/vmlinuz` is byte-for-byte the verified build; the DTB, systemd-boot and
+`pmos.conf` are unchanged; the regenerated initramfs holds the same 305 files,
+differing only in the rebuilt kernel modules and their index.
+
+The phone answered SSH four minutes after `systemctl reboot`, running
+`#2-postmarketos-qcom-sm7150` (built 11:41 UTC). All Phoenix units, nftables
+and Portainer came up and no unit failed; the kernel log has no oops, BUG or
+CFI report (the only matches for those words are `ramoops` lines, as on the
+previous boot). The driver programmed 4.40 V at probe and the limiter set
+4.10 V twelve seconds after boot. `nft_fib_inet` and `nft_redir` are now
+available. APSD also classified the dock as DCP again after the reboot, for
+the first time since the Sep 15 outage (ICL 1.5 A from APSD, settled 900 mA).
+
+#### The hold at 4.10 V, observed
+
+Telemetry between enabling float mode at 11:24 and the reboot, in 10-minute
+means:
+
+| UTC | `voltage_avg` | battery current | USB input |
+| --- | ---: | ---: | ---: |
+| 11:30 | 4.146 V | −58.1 mA | 14 mA |
+| 12:00 | 4.124 V | −56.7 mA | 230 mA |
+| 12:30 | 4.120 V | −30.5 mA | 317 mA |
+| 13:30 | 4.122 V | −6.3 mA | 402 mA |
+| 15:00 | 4.121 V | −1.4 mA | 413 mA |
+| 16:30 | 4.120 V | +0.3 mA | 415 mA |
+| 17:30 | 4.120 V | +0.6 mA | 406 mA |
+
+The cell ran the system down for about an hour, then held at 4.12 V (the
+gauge reads about 20 mV above the charger's ceiling) within about 1 mA for
+over four hours while the adapter supplied about 0.41 A — the adapter-first
+behaviour this work set out to get, at a lower voltage than inhibit mode held
+(4.165 V, creeping). Unlike the short test started at the cell's own voltage,
+there were no `Full`/`Charging` top-ups. On that evidence float control is now
+the package default (`FLOAT_CONTROL=1`, r37); `FLOAT_CONTROL=0` still selects
+inhibit-charge. r37 was installed at 18:00; the phone's limiter config is the
+packaged file again. Its initramfs regeneration differs from the one that
+booted only in the module index entry for `qcom_smbx` (`updates/` →
+`kernel/`), because the booted initramfs was generated before `updates/` was
+removed; the charger driver is not loaded from the initramfs.
+
 Still open:
 
-- Watch the hold at 4.10 V in telemetry; then consider `FLOAT_CONTROL=1` as
-  the package default.
-- Install the r1 kernel package with a watched reboot and remove the
-  `updates/` module.
 - Report the SMB5 float encoding upstream: it affects every SMB5 user of
   `qcom_smbx`, not only phoenix.
 
