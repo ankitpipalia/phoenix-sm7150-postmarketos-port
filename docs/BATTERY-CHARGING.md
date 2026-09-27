@@ -211,8 +211,10 @@ Measured on the phone on 2026-09-27 with both patches:
   system down to the ceiling (−92 to −178 mA). `phoenix-charge-cap status`
   reports this as `ABOVE CEILING`, not `DEFICIT`.
 - **At the ceiling** the adapter carries the system. Held at 4.10 V after
-  running down from above, the cell sat at 4.12 V (gauge) within about 1 mA
-  for 4.5 hours while the adapter supplied about 0.41 A. A short test that
+  running down from above, the cell sat at 4.12 V (gauge, within 2 mV) for
+  over four hours while the adapter supplied about 0.42 A; the battery current
+  settled from about −6 mA to a few tenths of a milliamp (hourly means),
+  averaging −1.4 mA over the window. A short test that
   started at the cell's own voltage instead saw small top-ups (about +20 mA
   mean, one core busy included) with the status alternating between `Full`
   and `Charging`.

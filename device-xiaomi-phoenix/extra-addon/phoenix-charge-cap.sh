@@ -113,7 +113,7 @@ deficit="$RUN_DIR/phoenix-charge-cap.deficit"
 lockout="$RUN_DIR/phoenix-charge-cap.lockout"
 # Float-voltage control (kernel patches 0018 + 0019).  Measured on this
 # hardware: above the ceiling the cell carries the system down to it; at the
-# ceiling the adapter carries the system and the cell sits within about 1 mA.
+# ceiling the adapter carries the system and the cell's current settles to ~0.
 float_attr="$charger/constant_charge_voltage"
 float_state="$RUN_DIR/phoenix-charge-cap.float-original"
 float_external="$RUN_DIR/phoenix-charge-cap.float-external"

@@ -1926,10 +1926,15 @@ means:
 | 17:30 | 4.120 V | +0.6 mA | 406 mA |
 
 The cell ran the system down for about an hour, then held at 4.12 V (the
-gauge reads about 20 mV above the charger's ceiling) within about 1 mA for
-over four hours while the adapter supplied about 0.41 A — the adapter-first
-behaviour this work set out to get, at a lower voltage than inhibit mode held
-(4.165 V, creeping). Unlike the short test started at the cell's own voltage,
+gauge reads about 20 mV above the charger's ceiling) while the adapter carried
+the system. Over 13:30–17:50 UTC (3,110 five-second samples) `voltage_avg`
+stayed between 4.1199 and 4.1218 V and the adapter averaged 417 mA. The
+battery current was still settling rather than flat: it averaged −1.39 mA
+(median +0.30 mA), with hourly means of −5.7, −2.7, −0.9, +0.1 and +0.4 mA;
+47% of samples were within ±1 mA and 83% within ±5 mA. (An earlier version of
+this paragraph said "within about 1 mA for over four hours", which fits only
+the last two hours.) That is the adapter-first behaviour this work set out to
+get, at a lower voltage than inhibit mode held (4.165 V, creeping). Unlike the short test started at the cell's own voltage,
 there were no `Full`/`Charging` top-ups. On that evidence float control is now
 the package default (`FLOAT_CONTROL=1`, r37); `FLOAT_CONTROL=0` still selects
 inhibit-charge. r37 was installed at 18:00; the phone's limiter config is the
