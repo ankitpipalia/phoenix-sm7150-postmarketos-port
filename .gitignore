@@ -30,3 +30,6 @@ pkg/
 # Logs
 *.log
 __pycache__/
+
+# Windows-on-Arm test artifacts (regenerate with scripts/build-mu-silicium-phoenix.sh)
+artifacts/windows/

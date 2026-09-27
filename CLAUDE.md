@@ -132,6 +132,10 @@ The firmware-xiaomi-phoenix package expects `firmware-xiaomi-phoenix.tar.gz` *ne
 
 After regenerating the tarball, also update its sha512 in `firmware-xiaomi-phoenix/APKBUILD` (the sync script does NOT touch this — it's the firmware package's own APKBUILD, not the kernel one). `30-initramfs-firmware-xiaomi-phoenix.files` controls which firmware blobs get pulled into the initramfs (currently only the GPU zap + panel firmware).
 
+## Windows on Arm (experimental, not bootable yet)
+
+`docs/WINDOWS-ON-ARM.md` is the source of truth. In short: the only UEFI with a phoenix target is Project Silicium's Mu-Silicium, where phoenix is inactive and **Windows boot does not work** because phoenix has no ACPI tables (its `AcpiTables.inf` is commented out and Silicium-ACPI has no phoenix DSDT). `scripts/build-mu-silicium-phoenix.sh` builds the UEFI from a pinned commit in Docker (macOS is not a supported build host); `scripts/verify-windows-arm64-iso.sh` checks a Microsoft ISO against the hash table on Microsoft's own page. Test only with `fastboot boot` (RAM, writes nothing: variables are RAM-emulated) — **never `fastboot flash boot`**, which replaces the davinci U-Boot and breaks the Linux boot — and never use the UEFI's mass-storage mode while the phone is plugged into a Mac, which auto-mounts and writes to the Android FAT partitions.
+
 ## Repo conventions
 
 - `.gitignore` blocks `*.bin`, `*.mbn`, `*.tar.gz`, `*.img` — firmware/images never enter the tree.
